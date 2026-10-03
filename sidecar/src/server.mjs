@@ -207,6 +207,22 @@ httpServer.listen(PORT, HOST, () => {
   console.log(`  counsel:  ${counsellor ? `ready (${counsellor.models[0]})` : `disabled - ${counselReason}`}\n`);
 });
 
+/**
+ * Which socket currently owns the capture SDK, or null when it is free.
+ *
+ * Per-connection state is not enough. `@smartspectra/node-sdk`'s own typings
+ * say "native SDK state is process-global", so every socket's SmartSpectraSDK
+ * is a handle onto the same native session. Two tabs casing at once therefore
+ * fight over it, and one tab's teardown drops the other out of its measuring
+ * state mid-window. The damage lands on the INNOCENT tab, as an opaque
+ * "SmartSpectra is not in a valid state for this operation" on its frames,
+ * which reads like a Presage outage and is not one.
+ *
+ * So the SDK is owned by one connection at a time and the second tab is told
+ * plainly what is happening.
+ */
+let sdkOwner = null;
+
 wss.on("connection", (ws, req) => {
   // Loopback-only is enforced by the bind, but a stray remote origin is worth refusing.
   const origin = req.headers.origin;
@@ -238,6 +254,11 @@ wss.on("connection", (ws, req) => {
       /* best effort */
     }
 
+    // Released only once teardown has actually finished. The SDK's typings say
+    // to await destroy() before constructing a replacement session, so handing
+    // the slot on any earlier rebuilds the race this guard exists to prevent.
+    if (sdkOwner === ws) sdkOwner = null;
+
     const result = finished.last ?? {
       composure: null,
       verdict: "inconclusive",
@@ -257,6 +278,14 @@ wss.on("connection", (ws, req) => {
   async function beginSession(msg) {
     if (session) {
       send({ type: "error", code: "already_casing", message: "a measurement is already running" });
+      return;
+    }
+    if (sdkOwner && sdkOwner !== ws) {
+      send({
+        type: "error",
+        code: "sidecar_busy",
+        message: "another tab is already measuring - close it, or wait for it to finish",
+      });
       return;
     }
 
@@ -302,6 +331,11 @@ wss.on("connection", (ws, req) => {
       });
     };
 
+    // Claimed before the first await rather than after start() returns:
+    // beginSession is async, so two sockets can both clear the guard above if
+    // the slot is only taken once the source is up.
+    sdkOwner = ws;
+
     try {
       pending.source =
         sourceMode === "mock"
@@ -331,6 +365,7 @@ wss.on("connection", (ws, req) => {
       await pending.source.start();
     } catch (err) {
       console.error("  could not start source:", err?.message ?? err);
+      sdkOwner = null;
       send({
         type: "error",
         code: err?.code ?? "source_start_failed",

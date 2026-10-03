@@ -439,7 +439,14 @@ class _SessionScreenState extends State<SessionScreen> {
               return Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  SizedBox(width: 340, child: left),
+                  // The camera and the numbers ARE the product; the chat is
+                  // empty for the whole measuring window. Give the left side
+                  // real estate proportional to the window, with a floor so it
+                  // stays usable and a ceiling so the conversation keeps room.
+                  SizedBox(
+                    width: (constraints.maxWidth * 0.42).clamp(360.0, 560.0).toDouble(),
+                    child: left,
+                  ),
                   const VerticalDivider(width: 1, color: Palette.surfaceAlt),
                   Expanded(child: right),
                 ],
@@ -447,7 +454,10 @@ class _SessionScreenState extends State<SessionScreen> {
             }
             return Column(
               children: [
-                SizedBox(height: 250, child: left),
+                SizedBox(
+                  height: (constraints.maxHeight * 0.52).clamp(320.0, 560.0).toDouble(),
+                  child: left,
+                ),
                 const Divider(height: 1, color: Palette.surfaceAlt),
                 Expanded(child: right),
               ],
@@ -468,15 +478,16 @@ class _CameraAndStats extends StatelessWidget {
   Widget build(BuildContext context) {
     final video = session.videoElement;
     final reading = session.reading;
-    final isNarrow = MediaQuery.sizeOf(context).width < 880;
 
-    return Padding(
-      padding: const EdgeInsets.all(14),
+    // Scrollable: the preview is deliberately large now, and on a short window
+    // a fixed column would overflow rather than letting the user reach the
+    // numbers underneath it.
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(
-            flex: isNarrow ? 3 : 0,
+          SizedBox(
             child: AspectRatio(
               aspectRatio: 4 / 3,
               child: ClipRRect(
@@ -500,6 +511,8 @@ class _CameraAndStats extends StatelessWidget {
               ),
             ),
           ),
+          const SizedBox(height: 12),
+          _CameraPicker(session: session),
           const SizedBox(height: 14),
           _StateChip(reading: reading, measuring: session.phase == SessionPhase.measuring),
           const SizedBox(height: 12),
@@ -521,7 +534,7 @@ class _CameraAndStats extends StatelessWidget {
             const Text(
               'Sit back so your head AND chest are in frame, with light on your face.',
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 11, color: Palette.gold, height: 1.4),
+              style: TextStyle(fontSize: 13, color: Palette.gold, height: 1.45),
             ),
           ],
           if (session.statusLine != null) ...[
@@ -529,7 +542,7 @@ class _CameraAndStats extends StatelessWidget {
             Text(
               session.statusLine!,
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 11, color: Palette.muted, height: 1.4),
+              style: const TextStyle(fontSize: 13, color: Palette.muted, height: 1.45),
             ),
           ],
           if (session.errorMessage != null) ...[
@@ -537,7 +550,7 @@ class _CameraAndStats extends StatelessWidget {
             Text(
               session.errorMessage!,
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 11, color: Palette.red, height: 1.4),
+              style: const TextStyle(fontSize: 13, color: Palette.red, height: 1.45),
             ),
           ],
         ],
@@ -569,6 +582,79 @@ class _LiveDot extends StatelessWidget {
   }
 }
 
+/// Which camera is in use, and a way to change it.
+///
+/// A laptop can expose several video inputs - an infrared sensor for face
+/// unlock, a vendor pipeline, the actual colour camera - and the browser picks
+/// one without asking. When it picks wrong the preview is near-black, which
+/// reads as a broken app; without this there is nothing the user can do about
+/// it from inside the page.
+class _CameraPicker extends StatelessWidget {
+  const _CameraPicker({required this.session});
+  final SessionController session;
+
+  @override
+  Widget build(BuildContext context) {
+    final cameras = session.cameras;
+    if (cameras.isEmpty) return const SizedBox.shrink();
+
+    // One camera is not a choice, but saying which one is in use is still the
+    // difference between "the app is broken" and "that is the wrong lens".
+    if (cameras.length == 1) {
+      return Text(
+        cameras.first.label,
+        textAlign: TextAlign.center,
+        style: const TextStyle(fontSize: 11, color: Palette.muted),
+      );
+    }
+
+    final activeId = session.activeCameraId;
+    final value = cameras.any((c) => c.id == activeId) ? activeId : null;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+      decoration: BoxDecoration(
+        color: Palette.surface,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.videocam_outlined, size: 16, color: Palette.muted),
+          const SizedBox(width: 10),
+          Expanded(
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: value,
+                isExpanded: true,
+                isDense: true,
+                hint: const Text(
+                  'Choose a camera',
+                  style: TextStyle(fontSize: 12, color: Palette.muted),
+                ),
+                dropdownColor: Palette.surface,
+                iconEnabledColor: Palette.muted,
+                style: const TextStyle(fontSize: 12, color: Color(0xFFE6E8EF)),
+                items: [
+                  for (final camera in cameras)
+                    DropdownMenuItem(
+                      value: camera.id,
+                      child: Text(camera.label, overflow: TextOverflow.ellipsis),
+                    ),
+                ],
+                // Switching restarts the measurement: the frames already sent
+                // came from a different camera and cannot be part of this one.
+                onChanged: (id) {
+                  if (id != null) unawaited(session.useCamera(id));
+                },
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// The headline verdict: good / conflicted / bad, with the composure number.
 class _StateChip extends StatelessWidget {
   const _StateChip({required this.reading, required this.measuring});
@@ -589,7 +675,7 @@ class _StateChip extends StatelessWidget {
         : verdict.stateLabel;
 
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
+      padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 18),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(10),
@@ -601,8 +687,8 @@ class _StateChip extends StatelessWidget {
           Text(
             label,
             style: TextStyle(
-              fontSize: 13,
-              letterSpacing: 1.6,
+              fontSize: 17,
+              letterSpacing: 1.8,
               fontWeight: FontWeight.w700,
               color: color,
             ),
@@ -611,14 +697,14 @@ class _StateChip extends StatelessWidget {
             const SizedBox(width: 10),
             Text(
               '$score',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w300, color: color),
+              style: TextStyle(fontSize: 30, fontWeight: FontWeight.w300, color: color),
             ),
           ],
           if (measuring && reading?.remainingMs != null && reading!.remainingMs > 0) ...[
             const SizedBox(width: 10),
             Text(
               '${(reading!.remainingMs / 1000).ceil()}s',
-              style: const TextStyle(fontSize: 11, color: Palette.muted),
+              style: const TextStyle(fontSize: 14, color: Palette.muted),
             ),
           ],
         ],
@@ -634,39 +720,57 @@ class _Stats extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final rows = <(String, String)>[
-      ('PULSE', reading?.pulseRate == null ? '—' : '${reading!.pulseRate!.round()} bpm'),
-      ('BREATHING', reading?.breathingRate == null ? '—' : '${reading!.breathingRate!.round()} /min'),
-      ('HRV (RMSSD)', reading?.rmssd == null ? '—' : '${reading!.rmssd!.round()} ms'),
-      ('STRESS INDEX', reading?.stressIndex == null ? '—' : '${reading!.stressIndex!.round()}'),
+    // Presage reports zero confidence for a metric until its own window has
+    // elapsed - 30s for breathing, a full 60s for HRV - so a dash early on is
+    // the system working, not failing. Saying which window each one is waiting
+    // for turns a row of dashes into visible progress.
+    final rows = <(String, String, String?)>[
+      ('PULSE', reading?.pulseRate == null ? '—' : '${reading!.pulseRate!.round()} bpm', null),
+      ('BREATHING', reading?.breathingRate == null ? '—' : '${reading!.breathingRate!.round()} /min', 'needs 30s'),
+      ('HRV (RMSSD)', reading?.rmssd == null ? '—' : '${reading!.rmssd!.round()} ms', 'needs 60s'),
+      ('STRESS INDEX', reading?.stressIndex == null ? '—' : '${reading!.stressIndex!.round()}', 'needs 60s'),
     ];
 
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 14),
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 18),
       decoration: BoxDecoration(
         color: Palette.surface,
         borderRadius: BorderRadius.circular(10),
       ),
       child: Column(
         children: [
-          for (final (label, value) in rows)
+          for (final (label, value, window) in rows)
             Padding(
-              padding: const EdgeInsets.symmetric(vertical: 7),
+              padding: const EdgeInsets.symmetric(vertical: 10),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
                     label,
                     style: const TextStyle(
-                      fontSize: 10,
-                      letterSpacing: 1.1,
+                      fontSize: 12,
+                      letterSpacing: 1.2,
                       color: Palette.muted,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  Text(
-                    value,
-                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.baseline,
+                    textBaseline: TextBaseline.alphabetic,
+                    children: [
+                      if (value == '—' && window != null) ...[
+                        Text(
+                          window,
+                          style: const TextStyle(fontSize: 11, color: Palette.muted),
+                        ),
+                        const SizedBox(width: 10),
+                      ],
+                      Text(
+                        value,
+                        style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -735,20 +839,20 @@ class _ChatState extends State<_Chat> {
           // "Waiting for a reading" through that reads as if nothing happened,
           // when in fact the measurement is done and a reply is on its way.
           child: (turns.isEmpty && !session.awaitingReply)
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(32),
-                    child: Text(
-                      measuring
-                          ? 'Reading your state…\nThe conversation starts when the measurement lands.'
-                          : session.phase == SessionPhase.talking
+              ? (measuring
+                  ? _MeasuringGuide(session: session)
+                  : Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(32),
+                        child: Text(
+                          session.phase == SessionPhase.talking
                               ? 'The measurement landed, but no reply came back.'
                               : 'Waiting for a reading.',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: Palette.muted, height: 1.6, fontSize: 13),
-                    ),
-                  ),
-                )
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Palette.muted, height: 1.6, fontSize: 13),
+                        ),
+                      ),
+                    ))
               : ListView.builder(
                   controller: _scroll,
                   padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
@@ -800,6 +904,153 @@ class _ChatState extends State<_Chat> {
                   disabledBackgroundColor: Palette.surfaceAlt,
                   minimumSize: const Size(44, 44),
                 ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// What to do during the window, shown from the moment it starts.
+///
+/// Presage's live hints are corrective: they arrive only once it has judged
+/// frames that are already spoiled. Someone who was never told to hold still
+/// has moved by then, and the opening seconds of a thirty-second window are
+/// gone. So the instructions lead and the hints correct, rather than the hints
+/// being the first place anyone learns what the measurement needs.
+///
+/// It lives in the conversation pane because that pane is empty for the whole
+/// measurement anyway, and a line of grey text was all it had to say.
+class _MeasuringGuide extends StatelessWidget {
+  const _MeasuringGuide({required this.session});
+  final SessionController session;
+
+  static const _rules = <(IconData, String, String)>[
+    (
+      Icons.self_improvement,
+      'Hold still, and stay quiet',
+      "Don't talk or chew — talking breaks the breathing measurement outright. This matters more than anything else.",
+    ),
+    (
+      Icons.person_outline,
+      'Head and chest in frame',
+      'Sit back so both are visible and unobstructed. Breathing is read from chest movement, so very dark or tightly striped clothing works against it.',
+    ),
+    (
+      Icons.light_mode_outlined,
+      'Steady light on your face',
+      'A lamp or window in front of you, not behind. Avoid a TV or screen flickering behind you — the pulse is read from colour change in skin.',
+    ),
+    (
+      Icons.laptop_mac,
+      'Put the camera down',
+      'Rest the laptop on a surface. Breathing detection needs a stable camera; handheld does not work.',
+    ),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final reading = session.reading;
+    final elapsedMs = reading?.elapsedMs ?? 0;
+    final remainingMs = reading?.remainingMs ?? 0;
+    final total = elapsedMs + remainingMs;
+    // Null until the first reading lands, which renders an indeterminate bar -
+    // honest about the fact that the window has not actually started counting.
+    final progress = total > 0 ? (elapsedMs / total).clamp(0.0, 1.0) : null;
+    final secondsLeft = remainingMs > 0 ? (remainingMs / 1000).ceil() : null;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 460),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'HOLD STILL',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 22,
+                  letterSpacing: 3,
+                  fontWeight: FontWeight.w700,
+                  color: Palette.gold,
+                ),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                secondsLeft == null ? '--' : '$secondsLeft',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 68,
+                  height: 1.0,
+                  fontWeight: FontWeight.w200,
+                  color: Color(0xFFE6E8EF),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                secondsLeft == null ? 'getting the camera ready' : 'seconds left',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 12, letterSpacing: 1.4, color: Palette.muted),
+              ),
+              const SizedBox(height: 22),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 6,
+                  backgroundColor: Palette.surfaceAlt,
+                  valueColor: const AlwaysStoppedAnimation<Color>(Palette.gold),
+                ),
+              ),
+              const SizedBox(height: 32),
+              for (final (icon, title, detail) in _rules) ...[
+                _Rule(icon: icon, title: title, detail: detail),
+                const SizedBox(height: 18),
+              ],
+              const SizedBox(height: 6),
+              const Text(
+                'The conversation starts when the measurement lands.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12, color: Palette.muted, height: 1.5),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Rule extends StatelessWidget {
+  const _Rule({required this.icon, required this.title, required this.detail});
+  final IconData icon;
+  final String title;
+  final String detail;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 20, color: Palette.gold),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                detail,
+                style: const TextStyle(fontSize: 12.5, color: Palette.muted, height: 1.5),
               ),
             ],
           ),

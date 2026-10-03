@@ -25,6 +25,9 @@ class CameraError implements Exception {
   String toString() => '$name: $message';
 }
 
+/// One camera the browser will admit to having.
+typedef CameraOption = ({String id, String label});
+
 /// Captures webcam frames in the browser and converts them to packed RGB24.
 ///
 /// The browser keeps ownership of the camera; frames go to the sidecar, which
@@ -34,7 +37,17 @@ class WebcamSource {
     this.width = 640,
     this.height = 480,
     this.fps = 15,
+    this.deviceId,
   });
+
+  /// Which camera to open, or null to let the browser choose.
+  ///
+  /// Letting it choose is wrong often enough to be worth overriding: a laptop
+  /// can expose several video inputs - an infrared sensor for face unlock, a
+  /// vendor pipeline, the actual colour camera - and `facingMode: 'user'` does
+  /// not distinguish them. Picking the wrong one yields a near-black image that
+  /// looks like a broken app and is really just the wrong device.
+  String? deviceId;
 
   /// Capture size. Presage is doing remote photoplethysmography — recovering a
   /// pulse from colour changes in skin — so resolution and light matter. 640x480
@@ -52,6 +65,36 @@ class WebcamSource {
 
   bool get isRunning => _timer != null;
 
+  /// The cameras available to this page.
+  ///
+  /// Labels are empty until camera permission has been granted at least once,
+  /// so this is worth calling after [start], not before.
+  static Future<List<CameraOption>> listCameras() async {
+    final devices = await web.window.navigator.mediaDevices.enumerateDevices().toDart;
+    final out = <CameraOption>[];
+    for (final device in devices.toDart) {
+      if (device.kind != 'videoinput') continue;
+      final label = device.label.isEmpty ? 'Camera ${out.length + 1}' : device.label;
+      out.add((id: device.deviceId, label: label));
+    }
+    return out;
+  }
+
+  web.MediaStreamTrack? get _videoTrack {
+    final tracks = _stream?.getVideoTracks().toDart;
+    return (tracks == null || tracks.isEmpty) ? null : tracks.first;
+  }
+
+  /// The camera that actually opened - not necessarily the one that was asked
+  /// for, since a non-exact constraint is only a preference.
+  String? get activeDeviceId => _videoTrack?.getSettings().deviceId;
+
+  /// Its human-readable name, for showing the user which camera is in use.
+  String? get activeLabel {
+    final label = _videoTrack?.label;
+    return (label == null || label.isEmpty) ? null : label;
+  }
+
   /// The live video element, so the UI can show the user what the camera sees.
   /// Framing feedback is most of the difference between a good and bad reading.
   web.HTMLVideoElement? get videoElement => _video;
@@ -64,13 +107,18 @@ class WebcamSource {
   }) async {
     if (_timer != null) return;
 
+    // `exact` on an explicit choice: a preference would silently fall back to
+    // the same wrong camera the user is trying to get away from. Without a
+    // choice, keep the front-facing preference.
+    final videoConstraints = <String, Object>{
+      'width': {'ideal': width},
+      'height': {'ideal': height},
+      'frameRate': {'ideal': fps},
+      if (deviceId != null) 'deviceId': {'exact': deviceId} else 'facingMode': 'user',
+    };
+
     final constraints = web.MediaStreamConstraints(
-      video: {
-        'width': {'ideal': width},
-        'height': {'ideal': height},
-        'frameRate': {'ideal': fps},
-        'facingMode': 'user',
-      }.jsify()!,
+      video: videoConstraints.jsify()!,
       audio: false.toJS,
     );
 

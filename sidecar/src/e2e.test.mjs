@@ -142,4 +142,75 @@ async function runCasing({ scenario, port, durationMs = 6000, thresholds }) {
   await once(child, "exit").catch(() => {});
 }
 
+// --- a second tab must be refused, not allowed to corrupt the SDK ------------
+//
+// The capture SDK's state is process-global ("native SDK state is
+// process-global", per its own typings), so a second casing does not merely
+// queue - it drops the FIRST tab out of its measuring state mid-window, and
+// that tab then fails with an opaque invalid-state error it did nothing to
+// cause. The second socket has to be turned away at the door.
+//
+// Mock-sourced so it runs anywhere. The guard is deliberately not
+// mode-dependent: one that only engages against real hardware is one nobody
+// ever tests.
+{
+  const child = spawn(process.execPath, [SERVER, "--source=mock", "--scenario=calm", "--port=18805"], {
+    stdio: ["ignore", "pipe", "pipe"], cwd: path.dirname(SERVER),
+  });
+  await new Promise((resolve) => child.stdout.on("data", (d) => d.toString().includes("listening") && resolve()));
+
+  const collect = (sock, bucket) => sock.on("message", (raw) => bucket.push(JSON.parse(raw.toString())));
+
+  const first = new WebSocket("ws://127.0.0.1:18805");
+  await once(first, "open");
+  const firstMsgs = [];
+  collect(first, firstMsgs);
+  first.send(JSON.stringify({ type: "begin", durationMs: 6000 }));
+  await new Promise((r) => setTimeout(r, 400));
+
+  const second = new WebSocket("ws://127.0.0.1:18805");
+  await once(second, "open");
+  const secondMsgs = [];
+  collect(second, secondMsgs);
+  second.send(JSON.stringify({ type: "begin", durationMs: 6000 }));
+  await new Promise((r) => setTimeout(r, 600));
+
+  assert.ok(firstMsgs.some((m) => m.type === "casing"), "the first tab must actually have started measuring");
+  assert.ok(
+    secondMsgs.some((m) => m.type === "error" && m.code === "sidecar_busy"),
+    `second tab should be refused with sidecar_busy, got ${JSON.stringify(secondMsgs)}`,
+  );
+  assert.ok(
+    !secondMsgs.some((m) => m.type === "casing"),
+    "second tab must not get a casing while the first holds the SDK",
+  );
+  // The whole point of the guard: the innocent tab is left alone.
+  assert.ok(
+    !firstMsgs.some((m) => m.type === "error"),
+    `first tab must be undisturbed, got ${JSON.stringify(firstMsgs.filter((m) => m.type === "error"))}`,
+  );
+  console.log("two tabs  -> first keeps the SDK, second told sidecar_busy");
+
+  // ...and the slot is handed over when the owner leaves, not leaked forever.
+  first.close();
+  await new Promise((r) => setTimeout(r, 800));
+  const third = new WebSocket("ws://127.0.0.1:18805");
+  await once(third, "open");
+  const thirdMsgs = [];
+  collect(third, thirdMsgs);
+  third.send(JSON.stringify({ type: "begin", durationMs: 6000 }));
+  await new Promise((r) => setTimeout(r, 800));
+
+  assert.ok(
+    thirdMsgs.some((m) => m.type === "casing"),
+    `the slot must be released on disconnect, got ${JSON.stringify(thirdMsgs)}`,
+  );
+  console.log("handover  -> slot released when the owning tab closes");
+
+  second.close();
+  third.close();
+  child.kill();
+  await once(child, "exit").catch(() => {});
+}
+
 console.log("\nall e2e tests passed");

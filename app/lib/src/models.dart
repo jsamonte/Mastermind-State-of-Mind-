@@ -139,7 +139,7 @@ class Blueprint {
     this.amber = 45,
     this.purchaseCeiling = 100,
     this.lieLowMinutes = 20,
-    this.casingSeconds = 30,
+    this.casingSeconds = 60,
   });
 
   /// Composure needed to open the vault.
@@ -154,8 +154,13 @@ class Blueprint {
   /// How long to lie low after an amber verdict.
   final int lieLowMinutes;
 
-  /// Length of one casing. Presage needs a sustained look to produce HRV, so
-  /// the UI refuses to go below 20s.
+  /// Length of one casing. Presage's own model cards state the thresholds this
+  /// has to clear: breathing confidence stays 0 until a full 30s window, and HRV
+  /// confidence stays 0 until a full 60s window. A 30s casing therefore could
+  /// never return a confident HRV, and only just scraped breathing — so readings
+  /// landed as `inconclusive` for a reason no amount of sitting still would fix.
+  /// 60s is the first value at which every requested metric can actually resolve.
+  /// The UI refuses to go below 20s.
   final int casingSeconds;
 
   bool requiresCasing(Job job) => switch (job.kind) {
@@ -178,7 +183,7 @@ class Blueprint {
       amber: (json['amber'] as num?)?.round() ?? 45,
       purchaseCeiling: (json['purchaseCeiling'] as num?)?.toDouble() ?? 100,
       lieLowMinutes: (json['lieLowMinutes'] as num?)?.round() ?? 20,
-      casingSeconds: (json['casingSeconds'] as num?)?.round() ?? 30,
+      casingSeconds: (json['casingSeconds'] as num?)?.round() ?? 60,
     );
   }
 }

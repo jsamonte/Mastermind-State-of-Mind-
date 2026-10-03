@@ -71,6 +71,24 @@ class SessionController extends ChangeNotifier {
   bool get cameraLive => _camera.isRunning;
   bool get sourceIsMock => _mock;
 
+  /// Every video input this page can see. Populated once the camera is open,
+  /// because labels stay blank until permission has been granted.
+  List<CameraOption> cameras = const [];
+
+  /// The camera actually in use, which is the one worth showing the user: a
+  /// machine with several video inputs can hand back an infrared sensor, and
+  /// the symptom is an almost-black picture that looks like a broken app.
+  String? get activeCameraId => _camera.activeDeviceId;
+  String? get activeCameraLabel => _camera.activeLabel;
+
+  /// Switches camera and measures again. The window cannot be salvaged mid-way,
+  /// so this restarts rather than pretending the earlier frames still count.
+  Future<void> useCamera(String deviceId) async {
+    if (deviceId == _camera.deviceId) return;
+    _camera.deviceId = deviceId;
+    await restart();
+  }
+
   StreamSubscription<Reading>? _readingSub;
   StreamSubscription<String>? _statusSub;
   StreamSubscription<SidecarError>? _errorSub;
@@ -129,6 +147,13 @@ class SessionController extends ChangeNotifier {
 
       phase = SessionPhase.measuring;
       statusLine = 'Hold still. Good light. Face in frame.';
+      // Enumerated now rather than at startup: labels are blank until the
+      // camera permission prompt has been answered.
+      try {
+        cameras = await WebcamSource.listCameras();
+      } catch (e) {
+        debugPrint('Mastermind: could not list cameras: $e');
+      }
       notifyListeners();
 
       final finalReading = await _sidecar.beginCasing(blueprint: const Blueprint());

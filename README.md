@@ -82,6 +82,24 @@ The sidecar falls back to a clearly-labelled mock source if the Presage key is
 missing or the platform has no native runtime, so the whole app is usable
 without a key. It never presents simulated vitals as real.
 
+**One tab at a time.** The Presage SDK's native state is process-global, so the
+sidecar hands it to a single connection and answers any other with
+`sidecar_busy`. Two open tabs are not two measurements; before the guard
+existed they were one corrupted one, failing on whichever tab was innocent.
+
+### The hosted build
+
+`https://mastermind-state-of-mind.web.app` serves the Flutter bundle, deployed
+with `firebase deploy --only hosting`. The bundle still points at
+`ws://127.0.0.1:8787`, which is loopback on **the visitor's** machine - so the
+hosted page is fully working for whoever is running the sidecar, and stalls at
+"Reading your state…" for everyone else. It is a demo you drive, not a link you
+send. `?sidecar=wss://host:port` overrides the address if the sidecar is ever
+published behind TLS.
+
+Hosting it also means a second origin that contends for the same sidecar: a
+localhost tab and a hosted tab are still two tabs.
+
 ## Docs
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — why the sidecar exists, and why
