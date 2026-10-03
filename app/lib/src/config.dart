@@ -16,10 +16,23 @@ class Config {
   /// mixed content. If the page is secure and the configured socket is not,
   /// this upgrades the scheme so the failure is a clear connection error rather
   /// than a silent security block.
+  /// Where a `?sidecar=` value is remembered across the Auth0 round trip.
+  static const _sidecarKey = 'mastermind.sidecar_url';
+
   static String get sidecarUrl {
     final fromQuery = Uri.base.queryParameters['sidecar'];
-    final configured = (fromQuery != null && fromQuery.isNotEmpty)
-        ? fromQuery
+
+    // The Auth0 redirect_uri is the bare origin, so the query string is GONE by
+    // the time the user comes back signed in. Without remembering it, a hosted
+    // page pointed at a tunnel silently reverts to loopback after login — which
+    // the browser then blocks. Persist it so the choice survives the redirect.
+    if (fromQuery != null && fromQuery.isNotEmpty) {
+      _remember(_sidecarKey, fromQuery);
+    }
+    final remembered = fromQuery?.isNotEmpty == true ? fromQuery : _recall(_sidecarKey);
+
+    final configured = (remembered != null && remembered.isNotEmpty)
+        ? remembered
         : const String.fromEnvironment(
             'SIDECAR_URL',
             defaultValue: 'ws://127.0.0.1:8787',
@@ -34,6 +47,46 @@ class Config {
       }
     }
     return configured;
+  }
+
+  /// Captures URL overrides at startup, before anything navigates away.
+  ///
+  /// Must be called from `main()`. The persistence inside [sidecarUrl] is lazy,
+  /// and on the login screen nothing reads it — so without this the `?sidecar=`
+  /// value is never saved and is lost the moment Auth0 redirects.
+  static void captureOverrides() {
+    final fromQuery = Uri.base.queryParameters['sidecar'];
+    if (fromQuery != null && fromQuery.isNotEmpty) {
+      _remember(_sidecarKey, fromQuery);
+    }
+  }
+
+  /// localStorage can throw in a private window or with site data blocked, and
+  /// a remembered convenience is never worth breaking startup over.
+  static void _remember(String key, String value) {
+    try {
+      web.window.localStorage.setItem(key, value);
+    } catch (_) {
+      /* ignored */
+    }
+  }
+
+  static String? _recall(String key) {
+    try {
+      return web.window.localStorage.getItem(key);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Clears a remembered sidecar address, so a stale tunnel URL can be dropped
+  /// without clearing all site data.
+  static void forgetSidecar() {
+    try {
+      web.window.localStorage.removeItem(_sidecarKey);
+    } catch (_) {
+      /* ignored */
+    }
   }
 
   /// Auth0 tenant domain. Resolved by probing the OIDC discovery endpoint:
@@ -73,7 +126,13 @@ class Config {
   /// loopback, and phone uplink is the binding constraint.
   static int get captureWidth => isLikelyMobile ? 320 : 640;
   static int get captureHeight => isLikelyMobile ? 240 : 480;
-  static int get captureFps => 15;
+  /// Presage rejects anything under 25fps outright — its validation stream says
+  /// "Use a camera mode that provides at least 25 frames per second", and until
+  /// it is satisfied no metric ever resolves, so the casing just runs out. 15
+  /// produced a measurement that could never land. 30 is the next standard
+  /// camera mode above the floor; asking for exactly 25 risks a camera that has
+  /// no 25fps mode quietly handing back 15 again.
+  static int get captureFps => 30;
 
   /// Bytes per second this configuration will push at the sidecar.
   /// Surfaced in the diagnostics panel because it is easy to get wrong.

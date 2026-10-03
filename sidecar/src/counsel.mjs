@@ -111,11 +111,34 @@ export function describeReading(reading) {
   const signals = reading.signals ?? {};
   const reasons = Array.isArray(reading.reasons) ? reading.reasons : [];
 
+  const provisional =
+    typeof reading.provisional === "number" ? reading.provisional : null;
+
   if (composure == null || verdict === "inconclusive") {
-    lines.push(
-      "The measurement did NOT produce a confident reading. Do not describe their " +
-        "state as if it were measured - say the read did not land, and ask them instead.",
-    );
+    if (provisional != null) {
+      // Refusing outright when real vitals DID arrive reads as the app being
+      // broken rather than the light being poor. Give them the provisional
+      // picture and the caveat together - silence is not the same as honesty.
+      lines.push(
+        `The measurement did not reach confident coverage, so there is no verdict ` +
+          `and the app is releasing nothing on the strength of it. A PROVISIONAL ` +
+          `score of ${provisional} out of 100 was computed from the signals that ` +
+          `did survive (higher is calmer).`,
+      );
+      lines.push(
+        "You MAY tell them what these numbers suggest and give them genuinely useful " +
+          "feedback. You MUST also say clearly, in your own words, that this read was " +
+          "low-confidence and what would fix it - usually more light on the face, " +
+          "holding still, or sitting back so head and chest are both in frame. Do NOT " +
+          "present the provisional number as a settled measurement, and do NOT treat " +
+          "it as permission to act on the decision.",
+      );
+    } else {
+      lines.push(
+        "The measurement did NOT produce a confident reading. Do not describe their " +
+          "state as if it were measured - say the read did not land, and ask them instead.",
+      );
+    }
   } else {
     lines.push(`Composure score: ${composure} out of 100 (higher is calmer).`);
     lines.push(

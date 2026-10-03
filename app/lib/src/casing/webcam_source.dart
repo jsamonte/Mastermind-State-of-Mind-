@@ -110,24 +110,33 @@ class WebcamSource {
     // `exact` on an explicit choice: a preference would silently fall back to
     // the same wrong camera the user is trying to get away from. Without a
     // choice, keep the front-facing preference.
-    final videoConstraints = <String, Object>{
-      'width': {'ideal': width},
-      'height': {'ideal': height},
-      'frameRate': {'ideal': fps},
-      if (deviceId != null) 'deviceId': {'exact': deviceId} else 'facingMode': 'user',
-    };
+    // Presage refuses to produce metrics below 25fps, so ask for the floor as a
+    // hard `min` rather than hoping. A soft `ideal` let the browser hand back
+    // 15fps, and the measurement then ran its full window and resolved nothing.
+    Map<String, Object> constraintsFor({required bool enforceMinFps}) => {
+          'width': {'ideal': width},
+          'height': {'ideal': height},
+          'frameRate': enforceMinFps ? {'ideal': fps, 'min': 25} : {'ideal': fps},
+          if (deviceId != null) 'deviceId': {'exact': deviceId} else 'facingMode': 'user',
+        };
 
-    final constraints = web.MediaStreamConstraints(
-      video: videoConstraints.jsify()!,
-      audio: false.toJS,
-    );
+    Future<web.MediaStream> open(Map<String, Object> video) => web.window
+        .navigator.mediaDevices
+        .getUserMedia(web.MediaStreamConstraints(video: video.jsify()!, audio: false.toJS))
+        .toDart;
 
     try {
-      _stream = await web.window.navigator.mediaDevices
-          .getUserMedia(constraints)
-          .toDart;
+      _stream = await open(constraintsFor(enforceMinFps: true));
     } catch (e) {
-      throw _asCameraError(e);
+      // A camera with no >=25fps mode fails the hard constraint outright. Opening
+      // anyway beats refusing to run: the reading will not land, but the user
+      // sees their own framing and Presage's own "at least 25 frames per second"
+      // hint, which is a far better diagnosis than a dead preview.
+      try {
+        _stream = await open(constraintsFor(enforceMinFps: false));
+      } catch (_) {
+        throw _asCameraError(e);
+      }
     }
 
     final video = web.document.createElement('video') as web.HTMLVideoElement

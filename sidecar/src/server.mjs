@@ -84,11 +84,29 @@ try {
  * origins are allowed - this process holds the Presage key and a Firebase
  * private key, and should not answer to a page from anywhere else.
  */
+/**
+ * Origins allowed in addition to loopback, comma-separated in EXTRA_ORIGINS.
+ *
+ * The deployed site needs this: a page on https://<project>.web.app talking to
+ * this process is a cross-origin request, so the origin has to be listed. Note
+ * that allowing it is NOT enough on its own — Chrome's Local Network Access
+ * policy blocks a public HTTPS page from reaching 127.0.0.1 before CORS is even
+ * consulted (`ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`), and WebSockets have
+ * no preflight to opt in with. The deployed site therefore has to reach this
+ * process through a tunnel, not through loopback. See docs/DEPLOYED.md.
+ */
+const EXTRA_ORIGINS = new Set(
+  (process.env.EXTRA_ORIGINS ?? "https://mastermind-state-of-mind.web.app")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+
 function applyCors(req, res) {
   const origin = req.headers.origin;
   if (!origin) return true;
-  const allowed = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-  if (!allowed) return false;
+  const isLoopback = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+  if (!isLoopback && !EXTRA_ORIGINS.has(origin)) return false;
   res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");

@@ -28,6 +28,13 @@
         "headers": [
           { "key": "Cache-Control", "value": "no-cache" }
         ]
+      },
+      {
+        "comment": "Flutter does NOT content-hash these filenames, and Firebase Hosting's default is max-age=3600. Without this, for an hour after every deploy returning visitors keep running the OLD app while the new one sits on the CDN - verified: the page ran a bundle missing code that a cache-busted fetch of the same URL returned. Revalidate instead; the files still transfer only when they change.",
+        "source": "**/@(main.dart.js|flutter_bootstrap.js|flutter.js|manifest.json)",
+        "headers": [
+          { "key": "Cache-Control", "value": "no-cache, must-revalidate" }
+        ]
       }
     ]
   }

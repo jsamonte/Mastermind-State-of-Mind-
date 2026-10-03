@@ -69,6 +69,7 @@ class Reading {
     required this.parts,
     required this.reasons,
     required this.signals,
+    this.provisional,
     this.elapsedMs = 0,
     this.remainingMs = 0,
     this.framesReceived = 0,
@@ -79,6 +80,17 @@ class Reading {
   /// would read as "maximally agitated" instead of "unknown".
   final int? composure;
   final Verdict verdict;
+
+  /// A score over whatever signal did survive, when coverage was too thin to
+  /// commit to [composure]. Null on a confident reading (where [composure] is
+  /// the answer) and null when nothing at all came through.
+  ///
+  /// This is NOT a verdict and must never be shown as one: the vault still
+  /// stays shut, because a number computed from half the signal is exactly the
+  /// kind of thing a commitment device must not be talked round by. It exists
+  /// so a weak reading can say "here is what I saw, and why I don't trust it"
+  /// instead of only "I cannot tell", which reads as the app being broken.
+  final int? provisional;
 
   /// Per-signal sub-scores, 0..1, keyed as in `composure.mjs` (`stressIndex`,
   /// `rmssd`, `pulseRate`, `breathingRate`, `expression`, `eda`).
@@ -122,6 +134,7 @@ class Reading {
           for (final r in rawReasons) '$r',
       ],
       signals: rawSignals is Map ? Map<String, dynamic>.from(rawSignals) : const {},
+      provisional: json['provisional'] is num ? (json['provisional'] as num).round() : null,
       elapsedMs: _int(json['elapsedMs']),
       remainingMs: _int(json['remainingMs']),
       framesReceived: _int(json['framesReceived']),

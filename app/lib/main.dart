@@ -16,6 +16,12 @@ import 'src/ui/palette.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Before anything can navigate away: a `?sidecar=` override has to be saved
+  // now, because the Auth0 redirect comes back to the bare origin with no query
+  // string. Doing it later is too late.
+  Config.captureOverrides();
+
   try {
     await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   } catch (e) {
@@ -541,6 +547,10 @@ class _CameraAndStats extends StatelessWidget {
           _StateChip(reading: reading, measuring: session.phase == SessionPhase.measuring),
           const SizedBox(height: 12),
           _Stats(reading: reading),
+          if (reading != null && reading.isFinal && reading.reasons.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            _Reasons(reasons: reading.reasons),
+          ],
           if (session.sourceIsMock) ...[
             const SizedBox(height: 10),
             const Text(
@@ -703,9 +713,20 @@ class _StateChip extends StatelessWidget {
     // "READING…" is right while a measurement is running, but after one has
     // finished without a confident result it reads as if it were still working.
     // Say plainly that there was no read.
-    final label = (!measuring && verdict == Verdict.inconclusive)
-        ? 'NO READ'
-        : verdict.stateLabel;
+    // A finished reading that could not commit, but did see something, says so
+    // with the number it saw. Deliberately rendered in muted grey rather than a
+    // verdict colour: the vault is still shut, and a provisional score that
+    // looked like a green would be the exact failure a commitment device must
+    // not have.
+    final provisional = reading?.provisional;
+    final isLowConfidence =
+        !measuring && verdict == Verdict.inconclusive && provisional != null;
+
+    final label = isLowConfidence
+        ? 'LOW CONFIDENCE'
+        : (!measuring && verdict == Verdict.inconclusive)
+            ? 'NO READ'
+            : verdict.stateLabel;
 
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 18),
@@ -714,18 +735,32 @@ class _StateChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: color.withValues(alpha: 0.4)),
       ),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Text(
             label,
             style: TextStyle(
-              fontSize: 17,
+              fontSize: isLowConfidence ? 14 : 17,
               letterSpacing: 1.8,
               fontWeight: FontWeight.w700,
               color: color,
             ),
           ),
+          if (isLowConfidence) ...[
+            const SizedBox(width: 14),
+            Text(
+              '$provisional',
+              style: const TextStyle(
+                fontSize: 30,
+                fontWeight: FontWeight.w300,
+                color: Palette.muted,
+              ),
+            ),
+          ],
           if (score != null) ...[
             const SizedBox(width: 10),
             Text(
@@ -738,6 +773,16 @@ class _StateChip extends StatelessWidget {
             Text(
               '${(reading!.remainingMs / 1000).ceil()}s',
               style: const TextStyle(fontSize: 14, color: Palette.muted),
+            ),
+          ],
+        ],
+          ),
+          if (isLowConfidence) ...[
+            const SizedBox(height: 8),
+            const Text(
+              'Not a verdict. The signal was too weak to be sure, so the vault stays shut.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11, color: Palette.muted, height: 1.45),
             ),
           ],
         ],
@@ -808,6 +853,62 @@ class _Stats extends StatelessWidget {
                 ],
               ),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Why the reading came out the way it did, in the sidecar's own words.
+///
+/// These were already being parsed and then dropped on the floor. On a weak
+/// reading they are the actionable half - the generic hint plus the two
+/// signals that contributed least - and without them "low confidence" is a
+/// verdict with no appeal.
+class _Reasons extends StatelessWidget {
+  const _Reasons({required this.reasons});
+  final List<String> reasons;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: Palette.surface,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'WHY',
+            style: TextStyle(
+              fontSize: 10,
+              letterSpacing: 1.6,
+              fontWeight: FontWeight.w700,
+              color: Palette.muted,
+            ),
+          ),
+          const SizedBox(height: 10),
+          for (final reason in reasons) ...[
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(top: 6, right: 9),
+                  child: Icon(Icons.circle, size: 5, color: Palette.muted),
+                ),
+                Expanded(
+                  child: Text(
+                    reason,
+                    style: const TextStyle(fontSize: 12.5, height: 1.5),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+          ],
         ],
       ),
     );

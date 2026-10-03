@@ -139,3 +139,6 @@ firebase/functions/node_modules/
 # Flutter app build output
 app/build/
 app/.dart_tool/
+
+# Tunnel binary - a 70MB vendored exe does not belong in git.
+sidecar/bin/cloudflared.exe

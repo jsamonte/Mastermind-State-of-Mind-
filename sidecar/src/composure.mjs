@@ -175,12 +175,36 @@ export function composure(signals = {}, thresholds = {}) {
   }
 
   if (coverage < MIN_WEIGHT_COVERAGE) {
+    // FAIL CLOSED still holds: `composure` stays null and the verdict stays
+    // inconclusive, so a weak read can never open the vault.
+    //
+    // But refusing to say anything at all was its own failure. Someone who sat
+    // still for 60s and watched real vitals appear was told only "I cannot
+    // tell", which reads as the app being broken rather than the light being
+    // poor. So when SOMETHING measurable survived, publish a provisional score
+    // alongside the refusal. It is explicitly labelled, never authoritative,
+    // and never a verdict - it exists so the UI and the conversation can say
+    // "this is roughly what we saw, and here is why we do not trust it".
+    const provisional =
+      coverage > 0 ? Math.round((weighted / coverage) * 100) : null;
+
+    const weak = Object.entries(parts)
+      .filter(([, v]) => v != null)
+      .sort((a, b) => a[1] - b[1])
+      .filter(([key, value]) => value < 0.6 && LABEL[key])
+      .slice(0, 2)
+      .map(([key]) => LABEL[key]);
+
     return {
       composure: null,
+      provisional,
       verdict: "inconclusive",
       parts,
       coverage,
-      reasons: ["Not enough confident signal to judge - hold still, good light, face in frame."],
+      reasons: [
+        "Not enough confident signal to judge - hold still, good light, face in frame.",
+        ...weak,
+      ],
     };
   }
 
@@ -196,5 +220,5 @@ export function composure(signals = {}, thresholds = {}) {
   }
 
   const verdict = score >= green ? "green" : score >= amber ? "amber" : "red";
-  return { composure: score, verdict, parts, coverage, reasons };
+  return { composure: score, provisional: null, verdict, parts, coverage, reasons };
 }
