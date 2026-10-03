@@ -72,17 +72,21 @@ export async function createSmartSpectraSource({ apiKey, onSignals, onStatus, on
     // Everything the composure heuristic can use. Requesting a bundle we then
     // ignore only costs processing, but a bundle we *forget* arrives empty -
     // cardio fields stay empty unless a cardio metric is explicitly requested.
-    requestedMetrics: [
-      ...(breathingMetrics ?? []),
-      ...(cardioMetrics ?? []),
-      ...(faceMetrics ?? []),
-      ...(edaMetrics ?? []),
-    ],
+    // Only what the app actually shows and scores. Presage's guidance is
+    // "request only what your app displays", and it matters more than usual
+    // here: on this machine the SDK runs under x64 emulation, so every metric
+    // group we do not need is per-frame work that can stop the pipeline keeping
+    // up with the stream. Dropping face+eda costs the composure heuristic 15%
+    // of its weight, which it renormalises away.
+    requestedMetrics: [...(breathingMetrics ?? []), ...(cardioMetrics ?? [])],
   });
 
   // Latest-value accumulator. Presage emits metrics incrementally, so we keep the
   // most recent confident sample of each signal rather than re-deriving per event.
   const latest = {};
+
+  /** Guards the strictly-increasing timestamp contract that custom input requires. */
+  let lastTimestampUs = -1;
 
   sdk.on("metrics", (buf, timestampUs) => {
     let decoded;
@@ -109,12 +113,41 @@ export async function createSmartSpectraSource({ apiKey, onSignals, onStatus, on
     version: SmartSpectraSDK.version,
 
     async start() {
+      lastTimestampUs = -1;
       sdk.useCustomInput(FrameTransform?.kNone);
       sdk.start();
     },
 
     sendFrame({ pixels, width, height, stride, timestampUs }) {
+      // Custom input makes the CALLER responsible for strictly increasing
+      // timestamps — the SDK has dedicated error codes for getting it wrong
+      // (kNonMonotonicTimestamp, kTimestampGap). Frames cross a WebSocket from a
+      // browser that may throttle or reorder on a backgrounded tab, so drop any
+      // frame that does not advance the clock rather than letting the pipeline
+      // fault on it.
+      if (!(timestampUs > lastTimestampUs)) return false;
+      lastTimestampUs = timestampUs;
       return sdk.sendFrame(pixels, width, height, stride, PixelFormat.kRGB, timestampUs);
+    },
+
+    /**
+     * Rebuild the pipeline after the SDK reports an error state.
+     *
+     * Without this, one `kProcessingFailed` poisons the session: every later
+     * `sendFrame()` is refused with kInvalidState and the next measurement
+     * silently returns nothing. `reset()` clears the input source, so the
+     * custom-input selection has to be made again before starting.
+     */
+    async recover() {
+      try {
+        await sdk.stopAsync();
+      } catch {
+        // Already stopped, or stopping from an error state - reset anyway.
+      }
+      sdk.reset();
+      lastTimestampUs = -1;
+      sdk.useCustomInput(FrameTransform?.kNone);
+      sdk.start();
     },
 
     async stop() {

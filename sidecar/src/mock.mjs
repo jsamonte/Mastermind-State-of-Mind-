@@ -125,6 +125,10 @@ export function createMockSource({
       return true;
     },
 
+    // The mock cannot enter a bad pipeline state, but it must satisfy the same
+    // interface or the server's recovery path throws on mock runs.
+    async recover() {},
+
     async stop() {
       if (timer) clearInterval(timer);
       timer = null;

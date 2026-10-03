@@ -209,6 +209,16 @@ class WebcamSource {
     final ctx = _ctx;
     if (video == null || ctx == null) return null;
     if (video.videoWidth == 0 || video.videoHeight == 0) return null;
+    // A paused video hands back the frame before it, forever. Presage reads a
+    // pulse from how the picture changes, so duplicates are worse than sending
+    // nothing: they look like a perfectly still subject, and the window closes
+    // on a confident-looking reading of a single still frame.
+    //
+    // CameraPreview keeps the element playing through the re-parenting that
+    // mounting a platform view does. This is the backstop for anything else
+    // that pauses it, and it fails loudly (no frames) rather than quietly
+    // (wrong frames).
+    if (video.paused) return null;
 
     ctx.drawImage(video, 0, 0, width.toDouble(), height.toDouble());
     final data = ctx.getImageData(0, 0, width, height).data.toDart;

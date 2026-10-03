@@ -310,6 +310,9 @@ wss.on("connection", (ws, req) => {
       endsAt: startedAt + durationMs,
       frames: 0,
       lastSent: 0,
+      // Set once the pipeline has been rebuilt for this casing, so a fault
+      // cannot put the SDK into a reset loop.
+      recovered: false,
       last: null,
       timer: null,
       source: null,
@@ -359,6 +362,24 @@ wss.on("connection", (ws, req) => {
               onError: (e) => {
                 console.error(`  [sdk error] code=${e.code} retryable=${e.retryable}: ${e.message}`);
                 send({ type: "error", ...e });
+
+                // kProcessingFailed(8) and kInvalidState(1) leave the pipeline
+                // poisoned: every later sendFrame is refused and the NEXT
+                // measurement silently returns nothing too. Rebuild once per
+                // casing — once, because a reset loop would be worse than a
+                // failed reading.
+                const POISONS_PIPELINE = new Set([1, 8]);
+                if (
+                  POISONS_PIPELINE.has(e.code) &&
+                  pending.source?.recover &&
+                  !pending.recovered
+                ) {
+                  pending.recovered = true;
+                  console.log("  [sdk] rebuilding the pipeline after an error state");
+                  pending.source.recover().catch((err) =>
+                    console.error(`  [sdk] recover failed: ${err?.message ?? err}`),
+                  );
+                }
               },
             });
 

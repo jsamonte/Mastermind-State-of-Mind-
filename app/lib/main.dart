@@ -79,15 +79,31 @@ class _GateState extends State<_Gate> {
     _resume();
   }
 
+  /// Nothing in the bootstrap may hang the gate. Every await here is bounded,
+  /// because the failure mode without a bound is not an error message - it is a
+  /// spinner that never resolves, which reads as "the whole site is broken"
+  /// when the real cause is a sidecar someone closed the terminal on.
+  static const _bootstrapTimeout = Duration(seconds: 6);
+
   Future<void> _resume() async {
     String? token;
     try {
       // Returning from Auth0 with ?code=, or already holding a valid token.
-      token = await _auth.completeLoginIfReturning() ?? _auth.storedIdToken;
+      token = await _auth
+              .completeLoginIfReturning()
+              .timeout(_bootstrapTimeout) ??
+          _auth.storedIdToken;
     } on Auth0Error catch (e) {
       if (!mounted) return;
       setState(() {
         _error = e.message;
+        _busy = false;
+      });
+      return;
+    } on TimeoutException {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Auth0 did not respond. Check your connection and try again.';
         _busy = false;
       });
       return;
@@ -98,12 +114,20 @@ class _GateState extends State<_Gate> {
     String? uid;
     if (token != null) {
       try {
-        final user = await AuthBridge().signInWithAuth0IdToken(token);
+        final user = await AuthBridge()
+            .signInWithAuth0IdToken(token)
+            .timeout(_bootstrapTimeout);
         uid = user.uid;
       } on AuthBridgeError catch (e) {
         // Being signed in to Auth0 but not Firebase is survivable: the whole
         // measurement and conversation work, only the history is lost.
         debugPrint('Mastermind: no Firebase session, continuing unsaved: $e');
+      } on TimeoutException {
+        // A sidecar that is down refuses fast, but one that is mid-restart
+        // accepts the connection and then never answers. That used to hold the
+        // gate open forever; now it just costs the history, which this path
+        // was always willing to lose.
+        debugPrint('Mastermind: sidecar did not answer in time, continuing unsaved');
       } catch (e) {
         debugPrint('Mastermind: Firebase sign-in failed, continuing unsaved: $e');
       }
@@ -525,18 +549,9 @@ class _CameraAndStats extends StatelessWidget {
               style: TextStyle(fontSize: 9, letterSpacing: 0.8, color: Palette.amber),
             ),
           ],
-          // Presage measures breathing from chest movement, so a head-and-
-          // shoulders crop fails with "Place more of the chest in view." Say so
-          // before the measurement is wasted rather than after.
-          if (session.phase == SessionPhase.measuring ||
-              session.phase == SessionPhase.starting) ...[
-            const SizedBox(height: 10),
-            const Text(
-              'Sit back so your head AND chest are in frame, with light on your face.',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 13, color: Palette.gold, height: 1.45),
-            ),
-          ],
+          // Framing/lighting guidance lives in the coaching panel beside the
+          // camera, not here — repeating it under the stats just competed with
+          // itself. What belongs here is Presage's LIVE hint, below.
           if (session.statusLine != null) ...[
             const SizedBox(height: 8),
             Text(
@@ -552,6 +567,24 @@ class _CameraAndStats extends StatelessWidget {
               textAlign: TextAlign.center,
               style: const TextStyle(fontSize: 13, color: Palette.red, height: 1.45),
             ),
+            // A dead end with no way out is the thing that makes a stopped
+            // sidecar look like a broken product. Starting it takes seconds;
+            // reloading the page to pick it up should not be the only route.
+            if (session.phase == SessionPhase.failed) ...[
+              const SizedBox(height: 14),
+              Center(
+                child: FilledButton.icon(
+                  onPressed: () => unawaited(session.restart()),
+                  icon: const Icon(Icons.refresh, size: 18),
+                  label: const Text('Try again'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Palette.gold,
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 13),
+                  ),
+                ),
+              ),
+            ],
           ],
         ],
       ),

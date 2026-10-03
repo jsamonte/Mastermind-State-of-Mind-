@@ -14,7 +14,7 @@
     "demo:agitated": "node src/server.mjs --source=mock --scenario=agitated",
     "test": "node src/composure.test.mjs && node src/protocol.test.mjs && node src/counsel.test.mjs && node src/e2e.test.mjs",
     "test:live": "node --env-file-if-exists=.env src/counsel.test.mjs --live",
-    "start:real": "\"${NODE_X64:-C:/Users/jared/node-x64/node.exe}\" --env-file-if-exists=.env src/server.mjs"
+    "start:real": "node start-real.mjs"
   },
   "dependencies": {
     "firebase-admin": "^14.5.0",

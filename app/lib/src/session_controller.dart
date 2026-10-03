@@ -109,9 +109,13 @@ class SessionController extends ChangeNotifier {
       await _sidecar.connect();
       _mock = _sidecar.sourceMode == 'mock';
     } catch (e) {
+      // Name the address and the exact command. This is the error a judge is
+      // most likely to see, and the cause is almost always a terminal someone
+      // closed rather than anything wrong with the app.
       _fail(e is SidecarError
           ? e.message
-          : 'Could not reach the sidecar. Start it with `npm start` in sidecar/.');
+          : 'Cannot reach the measurement service on ${Config.sidecarUrl}. '
+              'Start it with `npm run start:real` in sidecar/, then retry.');
       return;
     }
 
