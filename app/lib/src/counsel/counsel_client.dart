@@ -70,6 +70,10 @@ class CounselClient {
         body: jsonEncode({
           'reading': {
             'composure': reading.composure,
+            // Without this the conversation only ever sees a null composure on a
+            // low-confidence read and refuses to say anything, even though the
+            // screen beside it is showing a provisional score and real vitals.
+            'provisional': reading.provisional,
             'verdict': reading.verdict.name,
             'reasons': reading.reasons,
             'signals': {

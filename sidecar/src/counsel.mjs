@@ -126,12 +126,19 @@ export function describeReading(reading) {
           `did survive (higher is calmer).`,
       );
       lines.push(
-        "You MAY tell them what these numbers suggest and give them genuinely useful " +
-          "feedback. You MUST also say clearly, in your own words, that this read was " +
-          "low-confidence and what would fix it - usually more light on the face, " +
-          "holding still, or sitting back so head and chest are both in frame. Do NOT " +
-          "present the provisional number as a settled measurement, and do NOT treat " +
-          "it as permission to act on the decision.",
+        "GIVE THEM YOUR READ ANYWAY. Say what these specific numbers suggest about " +
+          "their state and give concrete, useful advice about the decision they raise. " +
+          "Refusing to engage is not the safe option here - it reads as the app being " +
+          "broken, and they came for help, not for an error message.",
+      );
+      lines.push(
+        "State the confidence plainly as part of that - that this read was weak, how " +
+          "much weight it deserves, and what would make the next one solid (usually " +
+          "more light on the face, holding still, or sitting back so head and chest " +
+          "are both in frame). Then leave the decision to them: they are the one who " +
+          "chooses how much to lean on a low-confidence reading. Do not present the " +
+          "provisional number as settled, and do not tell them the app has cleared " +
+          "them to act - it has not, and the vault stays shut either way.",
       );
     } else {
       lines.push(

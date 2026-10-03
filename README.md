@@ -87,6 +87,34 @@ sidecar hands it to a single connection and answers any other with
 `sidecar_busy`. Two open tabs are not two measurements; before the guard
 existed they were one corrupted one, failing on whichever tab was innocent.
 
+### Run the sidecar where you can restart it
+
+```
+sidecarun_sidecar.bat          REM port 8799
+sidecarun_sidecar.bat 8787     REM once 8787 is free
+```
+
+Double-click it, or run it from your own terminal. Ctrl-C stops it; run it
+again to restart. **Start it somewhere you control.** The SDK can wedge the
+process during a real measurement — the port stays bound and `netstat` still
+says `LISTENING`, but nothing is answered and the only cure is a restart. A
+sidecar launched from a window you cannot reach turns a five-second recovery
+into a hunt through Task Manager.
+
+The launcher checks the port first, because a wedged sidecar still holds it:
+rather than a bare `EADDRINUSE`, it prints the offending PID and how to tell a
+healthy instance from a wedged one.
+
+Before demoing, confirm it is actually answering — a wedged sidecar looks
+identical to a working one from the outside:
+
+```
+curl http://127.0.0.1:8799/health
+```
+
+`source` must read `smartspectra`. If it says `mock`, the real runtime did not
+load and the vitals are simulated.
+
 ### The hosted build
 
 `https://mastermind-state-of-mind.web.app` serves the Flutter bundle, deployed
