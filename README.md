@@ -31,15 +31,52 @@ vault shut until you're actually in a state to be trusted with the contents.
 - **AMBER** — you're warm. Lie low, then case it again.
 - **RED** — vault stays shut. The job is still there tomorrow.
 
+## Then it talks to you
+
+A verdict on its own is a locked door with no explanation. So after every
+reading Mastermind opens a conversation: it tells you what was actually
+measured, asks what decision you're facing, and helps you work out whether to
+act now or wait — with something concrete to settle and a realistic better time.
+
+It can also tell you to go ahead. An app that always says wait gets ignored, and
+deserves to be.
+
+The conversation is **advisory only** and never changes the verdict. The vault
+answers to your pulse, not to being talked round — otherwise a commitment device
+is just a negotiation.
+
 ## Stack
 
-- **Flutter web** — the frontend (`app/`)
+- **Flutter web** — the frontend (`app/`), responsive for desktop and mobile
 - **Presage SmartSpectra** — state-of-mind sensing, via a Node sidecar (`sidecar/`)
-- **Firebase** — Firestore for jobs/blueprints/record, Cloud Functions (`firebase/`)
-- **Auth0** — login, exchanged for a Firebase custom token
+- **Gemini** — the conversation after a reading, proxied through the sidecar
+- **Firebase** — Firestore for jobs, blueprints and the record (`firebase/`)
+- **Auth0** — login, exchanged for a Firebase custom token in the sidecar
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for why the sidecar exists —
-it is not optional, and the reason is interesting.
+Three credentials live in `sidecar/.env` and none reach the browser: Presage,
+Gemini, and the Firebase Admin service account. Anything compiled into a Flutter
+web bundle is public, which is a large part of why the sidecar exists.
+
+## Run it
+
+```bash
+cd sidecar && npm install && cp .env.example .env   # paste your keys in
+npm start                                           # ws + http on :8787
+
+cd ../app && flutter run -d chrome                  # or: flutter build web
+```
+
+The sidecar falls back to a clearly-labelled mock source if the Presage key is
+missing or the platform has no native runtime, so the whole app is usable
+without a key. It never presents simulated vitals as real.
+
+## Docs
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — why the sidecar exists, and why
+  that is not a choice. Read this first.
+- [docs/MOBILE.md](docs/MOBILE.md) — what it takes to measure on a phone, and
+  why the obvious shortcut is a bad idea.
+- [sidecar/README.md](sidecar/README.md) — the wire protocol and endpoints.
 
 ## Health disclaimer
 
@@ -47,3 +84,7 @@ Presage SmartSpectra metrics are for **general wellness and informational
 purposes only**. They are not FDA-cleared and must not be used for medical
 diagnosis or treatment. Mastermind is a commitment device, not a clinical tool,
 and its composure score is a deliberately simple heuristic over those signals.
+
+The conversation is a tool for second-guessing a text message or a purchase. It
+is not therapy and not mental-health advice, it is instructed not to diagnose,
+and it is told to stop coaching and point to real help if someone is in crisis.

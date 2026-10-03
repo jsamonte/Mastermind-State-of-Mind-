@@ -22,6 +22,7 @@ import { WebSocketServer } from "ws";
 import { createServer } from "node:http";
 import process from "node:process";
 import { createAuthMinter } from "./auth.mjs";
+import { createCounsellor } from "./counsel.mjs";
 import { decodeFrame, VERSION as PROTOCOL_VERSION } from "./protocol.mjs";
 import { composure } from "./composure.mjs";
 import { createMockSource, SCENARIOS } from "./mock.mjs";
@@ -58,8 +59,9 @@ if (sourceMode === "mock" && !SCENARIOS.includes(scenario)) {
   process.exit(1);
 }
 
-// The Auth0 -> Firebase minter is optional; the vault measures fine without it.
+// Both of these are optional; the vault measures fine without either.
 const { minter, reason: authReason } = await createAuthMinter();
+const { counsellor, reason: counselReason } = createCounsellor();
 
 /**
  * The page is served from a different port than the sidecar, so every HTTP
@@ -116,7 +118,34 @@ const httpServer = createServer(async (req, res) => {
       protocolVersion: PROTOCOL_VERSION,
       auth: minter ? "ready" : "disabled",
       authReason,
+      counsel: counsellor ? "ready" : "disabled",
+      counselReason,
     });
+    return;
+  }
+
+  // The conversation after a reading. The Gemini key stays here; anything in
+  // the Flutter web bundle is public.
+  if (url.pathname === "/counsel" && req.method === "POST") {
+    if (!counsellor) {
+      sendJson(res, 503, { error: "counsel_disabled", message: counselReason });
+      return;
+    }
+    try {
+      const body = JSON.parse(await readBody(req, 256 * 1024));
+      const messages = Array.isArray(body.messages) ? body.messages.slice(-24) : [];
+      const { reply, model } = await counsellor.counsel({
+        reading: body.reading,
+        messages,
+      });
+      sendJson(res, 200, { reply, model });
+    } catch (err) {
+      console.error("  counsel failed:", err?.message ?? err);
+      sendJson(res, err?.status === 503 ? 503 : 502, {
+        error: "counsel_failed",
+        message: String(err?.message ?? err),
+      });
+    }
     return;
   }
 
@@ -159,7 +188,8 @@ httpServer.listen(PORT, HOST, () => {
   console.log(`  source:   ${sourceMode}${sourceMode === "mock" ? ` (${scenario})` : ""}`);
   console.log(`  protocol: v${PROTOCOL_VERSION}`);
   console.log(`  window:   ${DEFAULT_DURATION_MS / 1000}s per casing`);
-  console.log(`  auth:     ${minter ? `ready (${minter.issuer})` : `disabled - ${authReason}`}\n`);
+  console.log(`  auth:     ${minter ? `ready (${minter.issuer})` : `disabled - ${authReason}`}`);
+  console.log(`  counsel:  ${counsellor ? `ready (${counsellor.models[0]})` : `disabled - ${counselReason}`}\n`);
 });
 
 wss.on("connection", (ws, req) => {

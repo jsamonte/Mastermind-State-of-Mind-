@@ -1,46 +1,114 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
-
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
-
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
-
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
   <base href="$FLUTTER_BASE_HREF">
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
 
-  <!-- iOS meta tags & icons -->
+  <!--
+    REQUIRED for mobile. Without this, phones render into a ~980px virtual
+    viewport and zoom out, which makes the app pick its WIDE two-column layout
+    on a phone screen. Flutter's default template omits it.
+
+    Zoom is deliberately NOT disabled (no `user-scalable=no`): blocking pinch
+    zoom breaks the page for anyone who needs to magnify it, and Flutter copes
+    fine without that restriction.
+
+    `viewport-fit=cover` lets the layout reach under notches; SafeArea in the
+    widget tree keeps content clear of them.
+  -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+
+  <meta name="description" content="Mastermind holds the things you'll regret until you're in a state to be trusted with them. It reads your pulse, breathing and heart-rate variability through your webcam, and keeps the vault shut until you're actually calm.">
+
+  <!-- Match the app's charcoal so the browser chrome does not flash light. -->
+  <meta name="theme-color" content="#0E0F13">
+
+  <!-- iOS -->
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="mastermind">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Mastermind">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
-  <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>mastermind</title>
+  <title>Mastermind</title>
   <link rel="manifest" href="manifest.json">
+
+  <style>
+    /*
+      Flutter paints nothing until its bundle boots, which on a cold phone load
+      is a second or two of blank white. Starting dark means the first frame is
+      not a flashbang, and the lock glyph says the page is alive.
+    */
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background-color: #0E0F13;
+      overflow: hidden;
+    }
+    #boot {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #8A90A6;
+      transition: opacity 280ms ease;
+    }
+    #boot.done { opacity: 0; pointer-events: none; }
+    #boot .glyph {
+      width: 42px; height: 42px;
+      border: 2px solid #E8B931;
+      border-radius: 8px;
+      position: relative;
+      animation: breathe 2.4s ease-in-out infinite;
+    }
+    /* The shackle of a padlock. */
+    #boot .glyph::before {
+      content: "";
+      position: absolute;
+      width: 20px; height: 14px;
+      border: 2px solid #E8B931;
+      border-bottom: none;
+      border-radius: 10px 10px 0 0;
+      top: -15px; left: 9px;
+    }
+    #boot .word {
+      font-size: 12px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+    }
+    /* Slow, even pulse - the app is about getting your breathing down. */
+    @keyframes breathe {
+      0%, 100% { opacity: 0.45; transform: scale(0.97); }
+      50%      { opacity: 1;    transform: scale(1.03); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #boot .glyph { animation: none; opacity: 0.8; }
+    }
+  </style>
 </head>
 <body>
-  <!--
-    You can customize the "flutter_bootstrap.js" script.
-    This is useful to provide a custom configuration to the Flutter loader
-    or to give the user feedback during the initialization process.
+  <div id="boot">
+    <div class="glyph"></div>
+    <div class="word">Mastermind</div>
+  </div>
 
-    For more details:
-    * https://docs.flutter.dev/platform-integration/web/initialization
-  -->
+  <script>
+    // Fade the boot screen once Flutter has actually put up its first frame.
+    window.addEventListener('flutter-first-frame', function () {
+      var boot = document.getElementById('boot');
+      if (!boot) return;
+      boot.classList.add('done');
+      setTimeout(function () { boot.remove(); }, 320);
+    });
+  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

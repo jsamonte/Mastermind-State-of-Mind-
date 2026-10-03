@@ -6,29 +6,11 @@ import 'package:flutter/material.dart';
 import 'src/config.dart';
 import 'src/models.dart';
 import 'src/ui/camera_preview.dart';
+import 'src/ui/counsel_panel.dart';
+import 'src/ui/palette.dart';
 import 'src/vault_controller.dart';
 
 void main() => runApp(const MastermindApp());
-
-/// Heist palette. Vault gold on charcoal, with the three verdict colours doing
-/// the real signalling work.
-abstract final class Palette {
-  static const bg = Color(0xFF0E0F13);
-  static const surface = Color(0xFF171922);
-  static const surfaceAlt = Color(0xFF1F222E);
-  static const gold = Color(0xFFE8B931);
-  static const green = Color(0xFF3DDC84);
-  static const amber = Color(0xFFFFB020);
-  static const red = Color(0xFFFF5A5A);
-  static const muted = Color(0xFF8A90A6);
-
-  static Color forVerdict(Verdict v) => switch (v) {
-        Verdict.green => green,
-        Verdict.amber => amber,
-        Verdict.red => red,
-        Verdict.inconclusive => muted,
-      };
-}
 
 class MastermindApp extends StatelessWidget {
   const MastermindApp({super.key});
@@ -803,7 +785,11 @@ class _VerdictPanel extends StatelessWidget {
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: Palette.muted, height: 1.5, fontSize: 13),
               ),
-              const SizedBox(height: 26),
+              const SizedBox(height: 22),
+              // The conversation is advisory. It never changes the verdict —
+              // the vault answers to the reading, not to being talked round.
+              CounselPanel(reading: reading),
+              const SizedBox(height: 22),
               FilledButton(
                 onPressed: onDone,
                 style: FilledButton.styleFrom(
