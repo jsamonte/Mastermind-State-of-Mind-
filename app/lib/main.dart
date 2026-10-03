@@ -512,8 +512,20 @@ class _CameraAndStats extends StatelessWidget {
               style: TextStyle(fontSize: 9, letterSpacing: 0.8, color: Palette.amber),
             ),
           ],
-          if (session.statusLine != null) ...[
+          // Presage measures breathing from chest movement, so a head-and-
+          // shoulders crop fails with "Place more of the chest in view." Say so
+          // before the measurement is wasted rather than after.
+          if (session.phase == SessionPhase.measuring ||
+              session.phase == SessionPhase.starting) ...[
             const SizedBox(height: 10),
+            const Text(
+              'Sit back so your head AND chest are in frame, with light on your face.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11, color: Palette.gold, height: 1.4),
+            ),
+          ],
+          if (session.statusLine != null) ...[
+            const SizedBox(height: 8),
             Text(
               session.statusLine!,
               textAlign: TextAlign.center,
@@ -569,6 +581,13 @@ class _StateChip extends StatelessWidget {
     final color = Palette.forVerdict(verdict);
     final score = reading?.composure;
 
+    // "READING…" is right while a measurement is running, but after one has
+    // finished without a confident result it reads as if it were still working.
+    // Say plainly that there was no read.
+    final label = (!measuring && verdict == Verdict.inconclusive)
+        ? 'NO READ'
+        : verdict.stateLabel;
+
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
       decoration: BoxDecoration(
@@ -580,7 +599,7 @@ class _StateChip extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Text(
-            verdict.stateLabel,
+            label,
             style: TextStyle(
               fontSize: 13,
               letterSpacing: 1.6,
@@ -711,14 +730,20 @@ class _ChatState extends State<_Chat> {
     return Column(
       children: [
         Expanded(
-          child: turns.isEmpty
+          // The empty state only applies when nothing is in flight. Once the
+          // reading lands, the first Gemini call takes several seconds — showing
+          // "Waiting for a reading" through that reads as if nothing happened,
+          // when in fact the measurement is done and a reply is on its way.
+          child: (turns.isEmpty && !session.awaitingReply)
               ? Center(
                   child: Padding(
                     padding: const EdgeInsets.all(32),
                     child: Text(
                       measuring
                           ? 'Reading your state…\nThe conversation starts when the measurement lands.'
-                          : 'Waiting for a reading.',
+                          : session.phase == SessionPhase.talking
+                              ? 'The measurement landed, but no reply came back.'
+                              : 'Waiting for a reading.',
                       textAlign: TextAlign.center,
                       style: const TextStyle(color: Palette.muted, height: 1.6, fontSize: 13),
                     ),

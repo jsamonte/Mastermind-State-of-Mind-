@@ -106,8 +106,17 @@ class SessionController extends ChangeNotifier {
       notifyListeners();
     });
     _errorSub = _sidecar.errors.listen((e) {
-      statusLine = e.message;
-      notifyListeners();
+      // Presage's validation hints ("Place more of the chest in view.") are the
+      // only feedback that tells someone how to FIX a failing measurement.
+      // Retryable SDK noise must not overwrite them — doing so replaced the one
+      // useful instruction with "SmartSpectra is not in a valid state", which
+      // is both unactionable and alarming.
+      if (e.fatal) {
+        errorMessage = e.message;
+        notifyListeners();
+      } else {
+        debugPrint('Mastermind: non-fatal sidecar error: ${e.code} ${e.message}');
+      }
     });
 
     try {
