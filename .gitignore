@@ -117,3 +117,25 @@ app.*.symbols
 !**/ios/**/default.perspectivev3
 !/packages/flutter_tools/test/data/dart_dependencies_test/**/.packages
 !/dev/ci/**/Gemfile.lock
+
+# ---------------------------------------------------------------- Mastermind
+# Secrets. The Presage API key lives in sidecar/.env and must never be committed.
+.env
+.env.*
+!.env.example
+
+# Node sidecar
+node_modules/
+npm-debug.log*
+
+# Firebase
+.firebase/
+firebase-debug.log*
+firebase/functions/node_modules/
+# Service account credentials - these are private keys, not config.
+**/serviceAccountKey.json
+**/*-firebase-adminsdk-*.json
+
+# Flutter app build output
+app/build/
+app/.dart_tool/

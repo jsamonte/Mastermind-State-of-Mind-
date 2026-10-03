@@ -1,0 +1,25 @@
+{
+  "name": "mastermind-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Presage SmartSpectra sidecar for Mastermind - holds the SDK the browser cannot, and streams composure readings to the Flutter web app.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/server.mjs",
+    "start:mock": "node --env-file-if-exists=.env src/server.mjs --source=mock",
+    "demo:calm": "node src/server.mjs --source=mock --scenario=calm",
+    "demo:agitated": "node src/server.mjs --source=mock --scenario=agitated",
+    "test": "node src/composure.test.mjs && node src/protocol.test.mjs && node src/e2e.test.mjs"
+  },
+  "dependencies": {
+    "firebase-admin": "^14.5.0",
+    "jose": "^6.2.12",
+    "ws": "^8.18.3"
+  },
+  "optionalDependencies": {
+    "@smartspectra/node-sdk": "^3.4.0"
+  }
+}
