@@ -33,6 +33,15 @@ enum Verdict {
         Verdict.red => 'VAULT SEALED',
         Verdict.inconclusive => 'NO READ',
       };
+
+  /// How the state is named to the user, matching the three words the
+  /// conversation is instructed to use.
+  String get stateLabel => switch (this) {
+        Verdict.green => 'GOOD STATE',
+        Verdict.amber => 'CONFLICTED',
+        Verdict.red => 'BAD STATE',
+        Verdict.inconclusive => 'READING…',
+      };
 }
 
 /// What kind of action is being gated.

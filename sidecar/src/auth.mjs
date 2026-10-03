@@ -41,14 +41,19 @@ export async function createAuthMinter({
   }
 
   let jose;
-  let admin;
+  let appMod;
+  let authMod;
   try {
     jose = await import("jose");
   } catch {
     return { minter: null, reason: "`jose` is not installed - run `npm install` in sidecar/" };
   }
   try {
-    admin = (await import("firebase-admin")).default;
+    // firebase-admin v13+ is modular. The old namespaced `admin.apps` /
+    // `admin.credential` surface is gone, and reaching for it throws a
+    // TypeError that used to take the whole sidecar down on startup.
+    appMod = await import("firebase-admin/app");
+    authMod = await import("firebase-admin/auth");
   } catch {
     return {
       minter: null,
@@ -69,8 +74,21 @@ export async function createAuthMinter({
     };
   }
 
-  if (!admin.apps.length) {
-    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+  // Reuse an existing app on a hot restart rather than throwing "already exists".
+  // Wrapped because a malformed key must disable the minter, not kill the
+  // process — measurement has to keep working without login.
+  let app;
+  try {
+    const { initializeApp, getApps, cert } = appMod;
+    const existing = getApps();
+    app = existing.length
+      ? existing[0]
+      : initializeApp({ credential: cert(serviceAccount) });
+  } catch (cause) {
+    return {
+      minter: null,
+      reason: `Firebase Admin would not initialise: ${cause?.message ?? cause}`,
+    };
   }
 
   // Normalise to an https issuer with a trailing slash, which is what Auth0 puts
@@ -119,7 +137,7 @@ export async function createAuthMinter({
           ...(payload.name ? { name: payload.name } : {}),
         };
 
-        const firebaseToken = await admin.auth().createCustomToken(uid, claims);
+        const firebaseToken = await authMod.getAuth(app).createCustomToken(uid, claims);
         return { firebaseToken, uid, claims };
       },
     },

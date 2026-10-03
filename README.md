@@ -10,8 +10,20 @@ It reads your physiological state through your webcam — pulse, breathing rate,
 heart-rate variability, electrodermal arousal, facial expression — and keeps the
 vault shut until you're actually in a state to be trusted with the contents.
 
-> Built for a heist-themed hackathon. The conceit is load-bearing: the thing in
-> the vault is your own impulse, and you are both the mastermind and the mark.
+> Built for **Rowdy Hacks 2026**, and submitted for **Best Use of Gemini API**,
+> **Best Use of Presage** and **Best Use of Auth0**. The heist conceit is
+> load-bearing: the thing in the vault is your own impulse, and you are both the
+> mastermind and the mark.
+
+Don't get fooled by scammers, but more importantly don't fool yourself. Make
+sure you are in a good state of mind before doing anything important, such as
+before making a big purchase, giving information to sketchy calls,
+double-texting, confessing to your crush, or breaking up with your crush.
+
+It can help the elderly and the vulnerable — the people scammers go after
+hardest — avoid being scammed, by giving them a way to check their current
+state of mind before making a major decision. Use Mastermind State of Mind
+today!
 
 ## The job
 

@@ -19,11 +19,15 @@ service cloud.firestore {
     // It is append-only by design — being able to quietly delete the evidence
     // of a bad night would defeat the point of a commitment device, and being
     // able to edit it after the fact would make the history worthless.
+    // Deliberately tolerant on the numeric type: `is int` would reject a value
+    // that arrived as a double, and a rules rejection surfaces to the client as
+    // a permission error that looks like broken auth. The range check is what
+    // actually matters; the exact numeric type does not.
     function isValidAttempt() {
       let d = request.resource.data;
-      return d.keys().hasAll(['jobId', 'verdict', 'measuredAt'])
+      return d.keys().hasAll(['verdict', 'measuredAt'])
           && d.verdict in ['green', 'amber', 'red', 'inconclusive']
-          && (d.composure == null || (d.composure is int && d.composure >= 0 && d.composure <= 100));
+          && (d.composure == null || (d.composure is number && d.composure >= 0 && d.composure <= 100));
     }
 
     match /users/{uid} {

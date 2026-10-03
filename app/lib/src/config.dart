@@ -36,6 +36,22 @@ class Config {
     return configured;
   }
 
+  /// Auth0 tenant domain. Resolved by probing the OIDC discovery endpoint:
+  /// `jared-v-samonte.us.auth0.com` answers, the other regions 404.
+  static const auth0Domain = String.fromEnvironment(
+    'AUTH0_DOMAIN',
+    defaultValue: 'jared-v-samonte.us.auth0.com',
+  );
+
+  /// Auth0 SPA application client id. Not a secret — a public client cannot
+  /// keep one, which is why the login uses PKCE.
+  static const auth0ClientId = String.fromEnvironment(
+    'AUTH0_CLIENT_ID',
+    defaultValue: 'k4cT3lZn2h2zV8Twe30lIlfCglgwtbD6',
+  );
+
+  static bool get hasAuth0 => auth0Domain.isNotEmpty && auth0ClientId.isNotEmpty;
+
   /// True when the browser will allow camera access.
   ///
   /// `getUserMedia` requires a secure context: HTTPS, or localhost. This is the

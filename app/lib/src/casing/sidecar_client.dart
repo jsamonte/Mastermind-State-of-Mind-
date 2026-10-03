@@ -158,7 +158,7 @@ class SidecarClient {
             : 'Sidecar ready — Presage SmartSpectra');
 
       case 'casing':
-        _status.add('Casing the vault…');
+        _status.add('Reading your state…');
 
       case 'reading':
         _readings.add(Reading.fromJson(msg));

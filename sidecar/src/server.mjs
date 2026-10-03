@@ -59,9 +59,24 @@ if (sourceMode === "mock" && !SCENARIOS.includes(scenario)) {
   process.exit(1);
 }
 
-// Both of these are optional; the vault measures fine without either.
-const { minter, reason: authReason } = await createAuthMinter();
-const { counsellor, reason: counselReason } = createCounsellor();
+// Both of these are optional; measurement works fine without either. They are
+// wrapped because a broken credential or a missing key must DISABLE the feature,
+// never stop the sidecar from measuring — that is its one essential job.
+let minter = null;
+let authReason = null;
+try {
+  ({ minter, reason: authReason } = await createAuthMinter());
+} catch (err) {
+  authReason = `auth setup threw: ${err?.message ?? err}`;
+}
+
+let counsellor = null;
+let counselReason = null;
+try {
+  ({ counsellor, reason: counselReason } = createCounsellor());
+} catch (err) {
+  counselReason = `counsel setup threw: ${err?.message ?? err}`;
+}
 
 /**
  * The page is served from a different port than the sidecar, so every HTTP
@@ -300,8 +315,17 @@ wss.on("connection", (ws, req) => {
           : await createSmartSpectraSource({
               apiKey: process.env.PRESAGE_API_KEY,
               onSignals,
-              onStatus: (s) => send({ type: "status", ...s }),
-              onError: (e) => send({ type: "error", ...e }),
+              onStatus: (s) => {
+                // Presage's validation hints say WHY a measurement is not
+                // landing ("no face", "too dark"). Silent in the log is how a
+                // broken pipeline looks healthy.
+                console.log(`  [status] ${s.kind}: ${s.hint ?? s.code ?? s.status ?? ""}`);
+                send({ type: "status", ...s });
+              },
+              onError: (e) => {
+                console.error(`  [sdk error] code=${e.code} retryable=${e.retryable}: ${e.message}`);
+                send({ type: "error", ...e });
+              },
             });
 
       await pending.source.start();

@@ -67,6 +67,23 @@ class FirestoreStore {
         'framesReceived': reading.framesReceived,
       };
 
+  /// Appends one reading to the record.
+  ///
+  /// This is the single-session shape the app actually uses: there is no job,
+  /// just "here is what I measured, and what I was deciding".
+  ///
+  /// Camera frames are never uploaded — they go to the local sidecar and are
+  /// discarded. Only the derived numbers are stored.
+  Future<void> recordReading(Reading reading, {String? decision}) => _attempts.add({
+        'verdict': reading.verdict.name,
+        'composure': reading.composure,
+        'parts': reading.parts,
+        'reasons': reading.reasons,
+        'signals': _summariseSignals(reading),
+        if (decision != null && decision.isNotEmpty) 'decision': decision,
+        'measuredAt': FieldValue.serverTimestamp(),
+      });
+
   /// The record: every attempt, newest first. This is the product's real
   /// payload — a log of when you reached for something and what state you were
   /// in when you did.

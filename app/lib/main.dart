@@ -1,16 +1,30 @@
 import 'dart:async';
-import 'dart:math' as math;
 
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
+import 'src/auth/auth0_client.dart';
+import 'src/backend/auth_bridge.dart';
+import 'src/backend/firestore_store.dart';
 import 'src/config.dart';
+import 'src/counsel/counsel_client.dart';
+import 'src/firebase_options.dart';
 import 'src/models.dart';
+import 'src/session_controller.dart';
 import 'src/ui/camera_preview.dart';
-import 'src/ui/counsel_panel.dart';
 import 'src/ui/palette.dart';
-import 'src/vault_controller.dart';
 
-void main() => runApp(const MastermindApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  try {
+    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  } catch (e) {
+    // Persistence is a bonus, not a prerequisite. If Firebase cannot start, the
+    // measurement and the conversation must still work.
+    debugPrint('Mastermind: Firebase init failed, continuing without it: $e');
+  }
+  runApp(const MastermindApp());
+}
 
 class MastermindApp extends StatelessWidget {
   const MastermindApp({super.key});
@@ -32,773 +46,776 @@ class MastermindApp extends StatelessWidget {
           displayColor: Colors.white,
         ),
       ),
-      home: const VaultScreen(),
+      home: const _Gate(),
     );
   }
 }
 
-class VaultScreen extends StatefulWidget {
-  const VaultScreen({super.key});
+/// Auth0 sits in front of everything. Nothing else is on screen until sign-in.
+class _Gate extends StatefulWidget {
+  const _Gate();
 
   @override
-  State<VaultScreen> createState() => _VaultScreenState();
+  State<_Gate> createState() => _GateState();
 }
 
-class _VaultScreenState extends State<VaultScreen> {
-  late final VaultController _vault;
-  Timer? _tick;
+class _GateState extends State<_Gate> {
+  late final Auth0Client _auth = Auth0Client(
+    domain: Config.auth0Domain,
+    clientId: Config.auth0ClientId,
+  );
+
+  bool _busy = true;
+  String? _error;
+  String? _idToken;
+
+  /// Firebase uid, which is the Auth0 `sub`. Null when the exchange could not
+  /// happen — the session then runs without persistence rather than failing.
+  String? _uid;
 
   @override
   void initState() {
     super.initState();
-    _vault = VaultController()..addListener(_onChange);
-    _seed();
-    // Lie-low countdowns need to tick even when nothing else changes.
-    _tick = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
+    _resume();
+  }
+
+  Future<void> _resume() async {
+    String? token;
+    try {
+      // Returning from Auth0 with ?code=, or already holding a valid token.
+      token = await _auth.completeLoginIfReturning() ?? _auth.storedIdToken;
+    } on Auth0Error catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.message;
+        _busy = false;
+      });
+      return;
+    }
+
+    // Trade the Auth0 token for a Firebase session so Firestore rules have an
+    // identity. The sidecar does the minting; see docs/ARCHITECTURE.md.
+    String? uid;
+    if (token != null) {
+      try {
+        final user = await AuthBridge().signInWithAuth0IdToken(token);
+        uid = user.uid;
+      } on AuthBridgeError catch (e) {
+        // Being signed in to Auth0 but not Firebase is survivable: the whole
+        // measurement and conversation work, only the history is lost.
+        debugPrint('Mastermind: no Firebase session, continuing unsaved: $e');
+      } catch (e) {
+        debugPrint('Mastermind: Firebase sign-in failed, continuing unsaved: $e');
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _idToken = token;
+      _uid = uid;
+      _busy = false;
     });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_busy) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator(color: Palette.gold)),
+      );
+    }
+    if (_idToken == null) {
+      return _LoginScreen(
+        error: _error,
+        onLogin: () => _auth.login(),
+      );
+    }
+    return SessionScreen(
+      email: '${_auth.claims?['email'] ?? _auth.claims?['name'] ?? ''}',
+      uid: _uid,
+      onLogout: () => _auth.logout(),
+    );
+  }
+}
+
+class _LoginScreen extends StatelessWidget {
+  const _LoginScreen({required this.onLogin, this.error});
+  final VoidCallback onLogin;
+  final String? error;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          // This is the front door of the site, so it carries the pitch and the
+          // hackathon credits as well as the button. That is taller than a
+          // phone in landscape, so it scrolls rather than overflows.
+          child: SingleChildScrollView(
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 440),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(28, 32, 28, 36),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.lock_outline, size: 46, color: Palette.gold),
+                      const SizedBox(height: 18),
+                      const Text(
+                        'MASTERMIND',
+                        style: TextStyle(fontSize: 20, letterSpacing: 4, fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 10),
+                      const Text(
+                        'Know your state of mind before you decide.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Palette.muted, height: 1.5, fontSize: 13),
+                      ),
+                      const SizedBox(height: 28),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton(
+                          onPressed: onLogin,
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Palette.gold,
+                            foregroundColor: Colors.black,
+                            padding: const EdgeInsets.symmetric(vertical: 15),
+                          ),
+                          child: const Text('Sign in', style: TextStyle(fontWeight: FontWeight.w600)),
+                        ),
+                      ),
+                      if (error != null) ...[
+                        const SizedBox(height: 16),
+                        Text(
+                          error!,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Palette.red, fontSize: 12, height: 1.4),
+                        ),
+                      ],
+                      const SizedBox(height: 32),
+                      const Pitch(),
+                      const SizedBox(height: 26),
+                      const HackathonCredits(),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The pitch, in the words we pitch it in. Sits on the landing screen so the
+/// case for the product is made before anyone signs in.
+class Pitch extends StatelessWidget {
+  const Pitch({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+      decoration: BoxDecoration(
+        color: Palette.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Palette.surfaceAlt),
+      ),
+      child: const Column(
+        children: [
+          Text(
+            "Don't get fooled by scammers, but more importantly don't fool yourself.",
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 13.5,
+              height: 1.5,
+              fontWeight: FontWeight.w700,
+              color: Palette.gold,
+            ),
+          ),
+          SizedBox(height: 10),
+          Text(
+            'Make sure you are in a good state of mind before doing anything '
+            'important, such as before making a big purchase, giving information '
+            'to sketchy calls, double-texting, confessing to your crush, or '
+            'breaking up with your crush.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12.5, height: 1.65, color: Palette.muted),
+          ),
+          SizedBox(height: 14),
+          Divider(height: 1, thickness: 1, color: Palette.surfaceAlt),
+          SizedBox(height: 14),
+          Text(
+            'It can help the elderly and the vulnerable avoid being scammed, by '
+            'giving them a way to check their current state of mind before '
+            'making a major decision.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12.5, height: 1.65, color: Palette.muted),
+          ),
+          SizedBox(height: 14),
+          Text(
+            'Use Mastermind State of Mind today!',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 13, height: 1.4, fontWeight: FontWeight.w600),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// What this was built for and which prizes it is in for. Judges land on the
+/// sign-in screen, so it says so there.
+class HackathonCredits extends StatelessWidget {
+  const HackathonCredits({super.key});
+
+  static const tracks = <String>[
+    'Best Use of Gemini API',
+    'Best Use of Presage',
+    'Best Use of Auth0',
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        const Text(
+          'BUILT FOR ROWDY HACKS 2026',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 10,
+            letterSpacing: 2.2,
+            fontWeight: FontWeight.w700,
+            color: Palette.gold,
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Submitted for',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 10.5, letterSpacing: 0.6, color: Palette.muted),
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 7,
+          runSpacing: 7,
+          children: [for (final track in tracks) _TrackChip(label: track)],
+        ),
+      ],
+    );
+  }
+}
+
+class _TrackChip extends StatelessWidget {
+  const _TrackChip({required this.label});
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+      decoration: BoxDecoration(
+        color: Palette.gold.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Palette.gold.withValues(alpha: 0.32)),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          fontSize: 10.5,
+          letterSpacing: 0.3,
+          fontWeight: FontWeight.w600,
+          color: Palette.gold,
+        ),
+      ),
+    );
+  }
+}
+
+/// The whole product: camera, live stats, and the conversation.
+class SessionScreen extends StatefulWidget {
+  const SessionScreen({
+    super.key,
+    required this.email,
+    required this.onLogout,
+    this.uid,
+  });
+  final String email;
+  final VoidCallback onLogout;
+
+  /// Firebase uid, when the Auth0 exchange succeeded. Null means this session
+  /// runs without persistence.
+  final String? uid;
+
+  @override
+  State<SessionScreen> createState() => _SessionScreenState();
+}
+
+class _SessionScreenState extends State<SessionScreen> {
+  late final SessionController _session;
+
+  @override
+  void initState() {
+    super.initState();
+    final uid = widget.uid;
+    _session = SessionController(
+      // Persist only when we actually hold a Firebase identity. Writing without
+      // one would be denied by firestore.rules anyway.
+      onReading: uid == null
+          ? null
+          : (reading) => FirestoreStore(uid: uid).recordReading(reading),
+    )..addListener(_onChange);
+    // The session starts itself: camera on, measurement running, no button to
+    // press. The point of the product is the reading, so get to it.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _session.start());
   }
 
   void _onChange() {
     if (mounted) setState(() {});
   }
 
-  /// Two example jobs so the vault is not empty on first load.
-  void _seed() {
-    _vault
-      ..addJob(Job(
-        id: 'seed-purchase',
-        kind: JobKind.purchase,
-        title: 'Mechanical keyboard, the expensive one',
-        amount: 240,
-        body: 'The cart has been open for three days.',
-      ))
-      ..addJob(Job(
-        id: 'seed-message',
-        kind: JobKind.message,
-        title: 'Reply to Alex',
-        body: 'The draft currently opens with "honestly, after everything".',
-      ));
-  }
-
   @override
   void dispose() {
-    _tick?.cancel();
-    _vault.removeListener(_onChange);
-    _vault.dispose();
+    _session.removeListener(_onChange);
+    _session.dispose();
     super.dispose();
   }
 
-  bool get _casingActive => _vault.phase != CasingPhase.idle;
-
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final isWide = constraints.maxWidth >= 860;
-        return Scaffold(
-          appBar: _buildAppBar(isWide),
-          floatingActionButton: (_casingActive && !isWide)
-              ? null
-              : FloatingActionButton.extended(
-                  onPressed: _planJob,
-                  backgroundColor: Palette.gold,
-                  foregroundColor: Colors.black,
-                  icon: const Icon(Icons.add),
-                  label: const Text('Plan a job'),
-                ),
-          body: SafeArea(
-            child: isWide
-                ? Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Expanded(flex: 5, child: _jobList()),
-                      const VerticalDivider(width: 1, color: Palette.surfaceAlt),
-                      Expanded(flex: 6, child: _panel()),
-                    ],
-                  )
-                : (_casingActive ? _panel() : _jobList()),
-          ),
-        );
-      },
-    );
-  }
-
-  PreferredSizeWidget _buildAppBar(bool isWide) {
-    return AppBar(
-      backgroundColor: Palette.bg,
-      elevation: 0,
-      titleSpacing: 20,
-      title: Row(
-        children: [
-          const Icon(Icons.lock_outline, color: Palette.gold, size: 22),
-          const SizedBox(width: 10),
-          const Text(
-            'MASTERMIND',
-            style: TextStyle(letterSpacing: 3, fontWeight: FontWeight.w700, fontSize: 16),
-          ),
-          if (isWide) ...[
-            const SizedBox(width: 16),
-            const Expanded(
-              child: Text(
-                "you can't rob a vault in a bad mood",
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: Palette.muted, fontSize: 12, letterSpacing: 0.3),
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Palette.bg,
+        elevation: 0,
+        titleSpacing: 18,
+        title: Row(
+          children: [
+            const Icon(Icons.lock_outline, color: Palette.gold, size: 18),
+            const SizedBox(width: 9),
+            const Text(
+              'MASTERMIND',
+              style: TextStyle(letterSpacing: 3, fontWeight: FontWeight.w700, fontSize: 14),
+            ),
+            // Only where there is room for it; on a phone the bar already
+            // carries the account and the sign-out.
+            if (MediaQuery.sizeOf(context).width >= 880) ...[
+              const SizedBox(width: 14),
+              const Text(
+                'ROWDY HACKS 2026',
+                style: TextStyle(letterSpacing: 1.6, fontSize: 9, color: Palette.muted),
               ),
-            ),
-          ],
-        ],
-      ),
-      actions: [
-        IconButton(
-          tooltip: 'Diagnostics',
-          onPressed: _showDiagnostics,
-          icon: const Icon(Icons.info_outline, color: Palette.muted),
-        ),
-      ],
-    );
-  }
-
-  // ---------------------------------------------------------------- job list
-
-  Widget _jobList() {
-    final jobs = _vault.jobs;
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
-      children: [
-        if (!Config.isSecureContext) const _InsecureContextWarning(),
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 12),
-          child: Text(
-            'IN THE VAULT',
-            style: TextStyle(
-              color: Palette.muted,
-              fontSize: 11,
-              letterSpacing: 2,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-        if (jobs.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 40),
-            child: Text(
-              "Nothing waiting. Plan a job and it will be held here until you're "
-              'in a state to be trusted with it.',
-              style: TextStyle(color: Palette.muted, height: 1.5),
-            ),
-          ),
-        for (final job in jobs)
-          _JobCard(
-            job: job,
-            blueprint: _vault.blueprint,
-            busy: _casingActive,
-            onCase: () => _vault.caseTheVault(job),
-            onAbandon: () => _vault.abandon(job),
-          ),
-      ],
-    );
-  }
-
-  // -------------------------------------------------------------- side panel
-
-  Widget _panel() {
-    return switch (_vault.phase) {
-      CasingPhase.idle => _IdlePanel(onPlan: _planJob),
-      CasingPhase.connecting ||
-      CasingPhase.measuring =>
-        _CasingPanel(vault: _vault, onStop: _vault.stopEarly),
-      CasingPhase.done => _VerdictPanel(vault: _vault, onDone: _vault.reset),
-      CasingPhase.failed => _FailurePanel(vault: _vault, onDone: _vault.reset),
-    };
-  }
-
-  // ------------------------------------------------------------------ dialogs
-
-  Future<void> _planJob() async {
-    final job = await showDialog<Job>(
-      context: context,
-      builder: (_) => const _PlanJobDialog(),
-    );
-    if (job != null) _vault.addJob(job);
-  }
-
-  void _showDiagnostics() {
-    showDialog<void>(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: Palette.surface,
-        title: const Text('Diagnostics'),
-        content: SizedBox(
-          width: 420,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _kv('Sidecar', Config.sidecarUrl),
-              _kv('Secure context',
-                  Config.isSecureContext ? 'yes' : 'NO — camera blocked'),
-              _kv('Capture',
-                  '${Config.captureWidth}x${Config.captureHeight} @ ${Config.captureFps}fps'),
-              _kv('Uplink',
-                  '${(Config.estimatedBytesPerSecond / 1e6).toStringAsFixed(1)} MB/s'),
-              _kv('Source',
-                  _vault.isMockSource ? 'MOCK (simulated vitals)' : 'Presage SmartSpectra'),
             ],
-          ),
+          ],
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  static Widget _kv(String k, String v) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 5),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-              width: 130,
-              child: Text(k, style: const TextStyle(color: Palette.muted, fontSize: 13)),
-            ),
-            Expanded(child: SelectableText(v, style: const TextStyle(fontSize: 13))),
-          ],
-        ),
-      );
-}
-
-// ------------------------------------------------------------------ widgets
-
-class _InsecureContextWarning extends StatelessWidget {
-  const _InsecureContextWarning();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(top: 12),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Palette.red.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Palette.red.withValues(alpha: 0.4)),
-      ),
-      child: const Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.warning_amber_rounded, color: Palette.red, size: 20),
-          SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              'This page is not a secure context, so the browser will refuse camera '
-              'access. Serve it over HTTPS (or localhost) before casing anything.',
-              style: TextStyle(fontSize: 13, height: 1.45),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _JobCard extends StatelessWidget {
-  const _JobCard({
-    required this.job,
-    required this.blueprint,
-    required this.busy,
-    required this.onCase,
-    required this.onAbandon,
-  });
-
-  final Job job;
-  final Blueprint blueprint;
-  final bool busy;
-  final VoidCallback onCase;
-  final VoidCallback onAbandon;
-
-  @override
-  Widget build(BuildContext context) {
-    final released = job.state == JobState.released;
-    final abandoned = job.state == JobState.abandoned;
-    final needsCasing = blueprint.requiresCasing(job);
-    final lyingLow = job.isLyingLow;
-
-    return Opacity(
-      opacity: abandoned ? 0.45 : 1,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Palette.surface,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: released ? Palette.green.withValues(alpha: 0.5) : Palette.surfaceAlt,
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  job.kind == JobKind.purchase
-                      ? Icons.shopping_bag_outlined
-                      : Icons.chat_bubble_outline,
-                  size: 16,
-                  color: Palette.gold,
+          if (widget.email.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Center(
+                child: Text(
+                  widget.email,
+                  style: const TextStyle(color: Palette.muted, fontSize: 11),
                 ),
-                const SizedBox(width: 8),
-                Text(
-                  job.kind.label.toUpperCase(),
-                  style: const TextStyle(
-                    fontSize: 10,
-                    letterSpacing: 1.6,
-                    color: Palette.gold,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                if (job.amount != null) ...[
-                  const SizedBox(width: 8),
-                  Text(
-                    '\$${job.amount!.toStringAsFixed(0)}',
-                    style: const TextStyle(fontSize: 12, color: Palette.muted),
-                  ),
-                ],
-                const Spacer(),
-                _StateChip(job: job),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Text(
-              job.title,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, height: 1.3),
-            ),
-            if (job.body != null) ...[
-              const SizedBox(height: 6),
-              Text(
-                job.body!,
-                style: const TextStyle(color: Palette.muted, fontSize: 13, height: 1.45),
               ),
-            ],
-            const SizedBox(height: 14),
-            if (!needsCasing)
-              Text(
-                'Under your \$${blueprint.purchaseCeiling.toStringAsFixed(0)} ceiling — no check needed.',
-                style: TextStyle(color: Palette.green.withValues(alpha: 0.9), fontSize: 12),
-              )
-            else
-              Wrap(
-                spacing: 10,
-                runSpacing: 8,
+            ),
+          IconButton(
+            tooltip: 'Sign out',
+            onPressed: widget.onLogout,
+            icon: const Icon(Icons.logout, size: 18, color: Palette.muted),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final isWide = constraints.maxWidth >= 880;
+            final left = _CameraAndStats(session: _session);
+            final right = _Chat(session: _session);
+
+            if (isWide) {
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  FilledButton.icon(
-                    onPressed: (busy || lyingLow || abandoned) ? null : onCase,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: Palette.gold,
-                      foregroundColor: Colors.black,
-                      disabledBackgroundColor: Palette.surfaceAlt,
-                    ),
-                    icon: const Icon(Icons.visibility_outlined, size: 18),
-                    label: Text(
-                      lyingLow
-                          ? 'Lying low — ${_fmt(job.lieLowRemaining)}'
-                          : released
-                              ? 'Case again'
-                              : 'Case the vault',
-                    ),
-                  ),
-                  if (!abandoned)
-                    TextButton(
-                      onPressed: onAbandon,
-                      child: const Text('Walk away',
-                          style: TextStyle(color: Palette.muted)),
-                    ),
+                  SizedBox(width: 340, child: left),
+                  const VerticalDivider(width: 1, color: Palette.surfaceAlt),
+                  Expanded(child: right),
                 ],
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  static String _fmt(Duration d) {
-    final m = d.inMinutes;
-    final s = d.inSeconds % 60;
-    return m > 0 ? '${m}m ${s}s' : '${s}s';
-  }
-}
-
-class _StateChip extends StatelessWidget {
-  const _StateChip({required this.job});
-  final Job job;
-
-  @override
-  Widget build(BuildContext context) {
-    final (label, color) = switch (job.state) {
-      JobState.released => ('RELEASED', Palette.green),
-      JobState.locked => (job.isLyingLow ? 'LYING LOW' : 'SEALED', Palette.red),
-      JobState.abandoned => ('WALKED AWAY', Palette.muted),
-      JobState.planned => ('WAITING', Palette.muted),
-    };
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: 9,
-          letterSpacing: 1.2,
-          color: color,
-          fontWeight: FontWeight.w700,
+              );
+            }
+            return Column(
+              children: [
+                SizedBox(height: 250, child: left),
+                const Divider(height: 1, color: Palette.surfaceAlt),
+                Expanded(child: right),
+              ],
+            );
+          },
         ),
       ),
     );
   }
 }
 
-class _IdlePanel extends StatelessWidget {
-  const _IdlePanel({required this.onPlan});
-  final VoidCallback onPlan;
+/// Camera feed with the live Presage numbers under it.
+class _CameraAndStats extends StatelessWidget {
+  const _CameraAndStats({required this.session});
+  final SessionController session;
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(40),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.lock_outline, size: 56, color: Palette.gold.withValues(alpha: 0.5)),
-            const SizedBox(height: 20),
-            const Text('The vault is shut',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 10),
-            const Text(
-              'Pick a job and case the vault. Mastermind reads your pulse, '
-              'breathing and heart-rate variability, and only opens if you are '
-              'actually in a state to go through with it.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Palette.muted, height: 1.55, fontSize: 13),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _CasingPanel extends StatelessWidget {
-  const _CasingPanel({required this.vault, required this.onStop});
-  final VaultController vault;
-  final VoidCallback onStop;
-
-  @override
-  Widget build(BuildContext context) {
-    final reading = vault.latestReading;
-    final video = vault.videoElement;
+    final video = session.videoElement;
+    final reading = session.reading;
+    final isNarrow = MediaQuery.sizeOf(context).width < 880;
 
     return Padding(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(14),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (vault.isMockSource) const _MockBanner(),
           Expanded(
-            child: Center(
-              child: SingleChildScrollView(
-                child: Column(
+            flex: isNarrow ? 3 : 0,
+            child: AspectRatio(
+              aspectRatio: 4 / 3,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Stack(
+                  fit: StackFit.expand,
                   children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(14),
-                      child: SizedBox(
-                        width: 240,
-                        height: 180,
-                        child: video == null
-                            ? Container(
-                                color: Palette.surfaceAlt,
-                                child: const Center(
-                                  child: CircularProgressIndicator(color: Palette.gold),
-                                ),
-                              )
-                            : CameraPreview(video: video),
-                      ),
-                    ),
-                    const SizedBox(height: 22),
-                    _ComposureDial(
-                      composure: reading?.composure,
-                      verdict: reading?.verdict ?? Verdict.inconclusive,
-                      remainingMs: reading?.remainingMs ?? 0,
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      vault.statusLine ?? 'Casing the vault…',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: Palette.muted, fontSize: 13),
-                    ),
-                    if (reading != null) ...[
-                      const SizedBox(height: 18),
-                      _SignalRow(reading: reading),
-                    ],
+                    if (video == null)
+                      Container(
+                        color: Palette.surfaceAlt,
+                        child: const Center(
+                          child: CircularProgressIndicator(color: Palette.gold, strokeWidth: 2),
+                        ),
+                      )
+                    else
+                      CameraPreview(video: video),
+                    if (session.cameraLive)
+                      const Positioned(top: 8, left: 8, child: _LiveDot()),
                   ],
                 ),
               ),
             ),
           ),
-          TextButton.icon(
-            onPressed: onStop,
-            icon: const Icon(Icons.stop_circle_outlined, size: 18),
-            label: const Text('Call it off'),
-            style: TextButton.styleFrom(foregroundColor: Palette.muted),
-          ),
+          const SizedBox(height: 14),
+          _StateChip(reading: reading, measuring: session.phase == SessionPhase.measuring),
+          const SizedBox(height: 12),
+          _Stats(reading: reading),
+          if (session.sourceIsMock) ...[
+            const SizedBox(height: 10),
+            const Text(
+              'MOCK SOURCE — simulated, not measured',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 9, letterSpacing: 0.8, color: Palette.amber),
+            ),
+          ],
+          if (session.statusLine != null) ...[
+            const SizedBox(height: 10),
+            Text(
+              session.statusLine!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 11, color: Palette.muted, height: 1.4),
+            ),
+          ],
+          if (session.errorMessage != null) ...[
+            const SizedBox(height: 10),
+            Text(
+              session.errorMessage!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 11, color: Palette.red, height: 1.4),
+            ),
+          ],
         ],
       ),
     );
   }
 }
 
-class _MockBanner extends StatelessWidget {
-  const _MockBanner();
+class _LiveDot extends StatelessWidget {
+  const _LiveDot();
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: Palette.amber.withValues(alpha: 0.14),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Palette.amber.withValues(alpha: 0.45)),
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(20),
       ),
       child: const Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.science_outlined, size: 18, color: Palette.amber),
-          SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              'MOCK SOURCE — these vitals are simulated, not measured.',
-              style: TextStyle(
-                  fontSize: 12, color: Palette.amber, fontWeight: FontWeight.w600),
-            ),
-          ),
+          Icon(Icons.fiber_manual_record, size: 8, color: Palette.red),
+          SizedBox(width: 5),
+          Text('LIVE', style: TextStyle(fontSize: 9, letterSpacing: 1.2, color: Colors.white)),
         ],
       ),
     );
   }
 }
 
-/// The vault dial. Arc fills with composure; colour carries the verdict.
-class _ComposureDial extends StatelessWidget {
-  const _ComposureDial({
-    required this.composure,
-    required this.verdict,
-    required this.remainingMs,
-  });
-
-  final int? composure;
-  final Verdict verdict;
-  final int remainingMs;
+/// The headline verdict: good / conflicted / bad, with the composure number.
+class _StateChip extends StatelessWidget {
+  const _StateChip({required this.reading, required this.measuring});
+  final Reading? reading;
+  final bool measuring;
 
   @override
   Widget build(BuildContext context) {
+    final verdict = reading?.verdict ?? Verdict.inconclusive;
     final color = Palette.forVerdict(verdict);
-    return SizedBox(
-      width: 190,
-      height: 190,
-      child: CustomPaint(
-        painter: _DialPainter(value: (composure ?? 0) / 100, color: color),
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                composure?.toString() ?? '--',
-                style: TextStyle(
-                  fontSize: 50,
-                  fontWeight: FontWeight.w200,
-                  color: color,
-                  height: 1,
-                ),
-              ),
-              const SizedBox(height: 4),
-              const Text('COMPOSURE',
-                  style: TextStyle(fontSize: 9, letterSpacing: 2, color: Palette.muted)),
-              if (remainingMs > 0) ...[
-                const SizedBox(height: 8),
-                Text('${(remainingMs / 1000).ceil()}s left',
-                    style: const TextStyle(fontSize: 11, color: Palette.muted)),
-              ],
-            ],
+    final score = reading?.composure;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            verdict.stateLabel,
+            style: TextStyle(
+              fontSize: 13,
+              letterSpacing: 1.6,
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
           ),
-        ),
+          if (score != null) ...[
+            const SizedBox(width: 10),
+            Text(
+              '$score',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w300, color: color),
+            ),
+          ],
+          if (measuring && reading?.remainingMs != null && reading!.remainingMs > 0) ...[
+            const SizedBox(width: 10),
+            Text(
+              '${(reading!.remainingMs / 1000).ceil()}s',
+              style: const TextStyle(fontSize: 11, color: Palette.muted),
+            ),
+          ],
+        ],
       ),
     );
   }
 }
 
-class _DialPainter extends CustomPainter {
-  _DialPainter({required this.value, required this.color});
-  final double value;
-  final Color color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final rect = Rect.fromLTWH(10, 10, size.width - 20, size.height - 20);
-    const start = math.pi * 0.75;
-    const sweep = math.pi * 1.5;
-
-    final track = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 10
-      ..strokeCap = StrokeCap.round
-      ..color = Palette.surfaceAlt;
-    canvas.drawArc(rect, start, sweep, false, track);
-
-    if (value > 0) {
-      final fill = Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 10
-        ..strokeCap = StrokeCap.round
-        ..color = color;
-      canvas.drawArc(rect, start, sweep * value.clamp(0, 1), false, fill);
-    }
-  }
-
-  @override
-  bool shouldRepaint(_DialPainter old) => old.value != value || old.color != color;
-}
-
-class _SignalRow extends StatelessWidget {
-  const _SignalRow({required this.reading});
-  final Reading reading;
+/// The Presage numbers.
+class _Stats extends StatelessWidget {
+  const _Stats({required this.reading});
+  final Reading? reading;
 
   @override
   Widget build(BuildContext context) {
-    final items = <(String, String)>[
-      ('PULSE', reading.pulseRate == null ? '--' : '${reading.pulseRate!.round()} bpm'),
-      ('BREATH',
-          reading.breathingRate == null ? '--' : '${reading.breathingRate!.round()}/min'),
-      ('HRV', reading.rmssd == null ? '--' : '${reading.rmssd!.round()} ms'),
-      ('STRESS',
-          reading.stressIndex == null ? '--' : reading.stressIndex!.round().toString()),
+    final rows = <(String, String)>[
+      ('PULSE', reading?.pulseRate == null ? '—' : '${reading!.pulseRate!.round()} bpm'),
+      ('BREATHING', reading?.breathingRate == null ? '—' : '${reading!.breathingRate!.round()} /min'),
+      ('HRV (RMSSD)', reading?.rmssd == null ? '—' : '${reading!.rmssd!.round()} ms'),
+      ('STRESS INDEX', reading?.stressIndex == null ? '—' : '${reading!.stressIndex!.round()}'),
     ];
-    return Wrap(
-      alignment: WrapAlignment.center,
-      spacing: 22,
-      runSpacing: 12,
+
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 14),
+      decoration: BoxDecoration(
+        color: Palette.surface,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        children: [
+          for (final (label, value) in rows)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 7),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      fontSize: 10,
+                      letterSpacing: 1.1,
+                      color: Palette.muted,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  Text(
+                    value,
+                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The conversation. One thread, always open — no list, no new-chat, no picker.
+class _Chat extends StatefulWidget {
+  const _Chat({required this.session});
+  final SessionController session;
+
+  @override
+  State<_Chat> createState() => _ChatState();
+}
+
+class _ChatState extends State<_Chat> {
+  final _input = TextEditingController();
+  final _scroll = ScrollController();
+  int _lastCount = 0;
+
+  @override
+  void dispose() {
+    _input.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _send() {
+    final text = _input.text;
+    if (text.trim().isEmpty) return;
+    _input.clear();
+    widget.session.send(text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final session = widget.session;
+    final turns = session.turns;
+
+    // Follow the conversation as it grows.
+    if (turns.length != _lastCount) {
+      _lastCount = turns.length;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scroll.hasClients) {
+          _scroll.animateTo(
+            _scroll.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 240),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    }
+
+    final measuring = session.phase == SessionPhase.measuring ||
+        session.phase == SessionPhase.starting;
+
+    return Column(
       children: [
-        for (final (label, value) in items)
-          Column(
+        Expanded(
+          child: turns.isEmpty
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(32),
+                    child: Text(
+                      measuring
+                          ? 'Reading your state…\nThe conversation starts when the measurement lands.'
+                          : 'Waiting for a reading.',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Palette.muted, height: 1.6, fontSize: 13),
+                    ),
+                  ),
+                )
+              : ListView.builder(
+                  controller: _scroll,
+                  padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
+                  itemCount: turns.length + (session.awaitingReply ? 1 : 0),
+                  itemBuilder: (context, i) {
+                    if (i >= turns.length) return const _Typing();
+                    return _Bubble(turn: turns[i]);
+                  },
+                ),
+        ),
+        const Divider(height: 1, color: Palette.surfaceAlt),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+          child: Row(
             children: [
-              Text(value,
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 2),
-              Text(label,
-                  style: const TextStyle(
-                      fontSize: 9, letterSpacing: 1.4, color: Palette.muted)),
+              Expanded(
+                child: TextField(
+                  controller: _input,
+                  enabled: session.phase == SessionPhase.talking && !session.awaitingReply,
+                  textInputAction: TextInputAction.send,
+                  onSubmitted: (_) => _send(),
+                  minLines: 1,
+                  maxLines: 4,
+                  style: const TextStyle(fontSize: 14),
+                  decoration: InputDecoration(
+                    hintText: session.phase == SessionPhase.talking
+                        ? 'Type your reply'
+                        : 'Measuring…',
+                    hintStyle: const TextStyle(color: Palette.muted, fontSize: 14),
+                    filled: true,
+                    fillColor: Palette.surface,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(24),
+                      borderSide: BorderSide.none,
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                onPressed: (session.phase == SessionPhase.talking && !session.awaitingReply)
+                    ? _send
+                    : null,
+                icon: const Icon(Icons.arrow_upward_rounded, size: 20),
+                style: IconButton.styleFrom(
+                  backgroundColor: Palette.gold,
+                  foregroundColor: Colors.black,
+                  disabledBackgroundColor: Palette.surfaceAlt,
+                  minimumSize: const Size(44, 44),
+                ),
+              ),
             ],
           ),
+        ),
       ],
     );
   }
 }
 
-class _VerdictPanel extends StatelessWidget {
-  const _VerdictPanel({required this.vault, required this.onDone});
-  final VaultController vault;
-  final VoidCallback onDone;
+class _Bubble extends StatelessWidget {
+  const _Bubble({required this.turn});
+  final CounselTurn turn;
 
   @override
   Widget build(BuildContext context) {
-    final reading = vault.finalReading;
-    if (reading == null) return _FailurePanel(vault: vault, onDone: onDone);
-
-    final color = Palette.forVerdict(reading.verdict);
-    final opens = reading.verdict.opensVault;
-
-    return Padding(
-      padding: const EdgeInsets.all(28),
-      child: Center(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(opens ? Icons.lock_open_rounded : Icons.lock_rounded,
-                  size: 56, color: color),
-              const SizedBox(height: 18),
-              Text(
-                reading.verdict.headline,
-                style: TextStyle(
-                  fontSize: 26,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 2,
-                  color: color,
-                ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                reading.composure == null
-                    ? 'No confident reading'
-                    : 'Composure ${reading.composure}',
-                style: const TextStyle(color: Palette.muted),
-              ),
-              const SizedBox(height: 22),
-              if (reading.reasons.isNotEmpty)
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Palette.surface,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      for (final reason in reading.reasons)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 3),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text('— ', style: TextStyle(color: Palette.muted)),
-                              Expanded(
-                                child: Text(reason,
-                                    style: const TextStyle(fontSize: 13, height: 1.45)),
-                              ),
-                            ],
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              const SizedBox(height: 18),
-              Text(
-                opens
-                    ? 'The job is released. Go and do it.'
-                    : vault.activeJob?.isLyingLow == true
-                        ? 'Lie low for ${vault.blueprint.lieLowMinutes} minutes, then case it again.'
-                        : 'The job is still there tomorrow.',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Palette.muted, height: 1.5, fontSize: 13),
-              ),
-              const SizedBox(height: 22),
-              // The conversation is advisory. It never changes the verdict —
-              // the vault answers to the reading, not to being talked round.
-              CounselPanel(reading: reading),
-              const SizedBox(height: 22),
-              FilledButton(
-                onPressed: onDone,
-                style: FilledButton.styleFrom(
-                  backgroundColor: Palette.surfaceAlt,
-                  foregroundColor: Colors.white,
-                ),
-                child: const Text('Back to the vault'),
-              ),
-            ],
+    final isUser = turn.isUser;
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 11),
+        constraints: const BoxConstraints(maxWidth: 520),
+        decoration: BoxDecoration(
+          color: turn.failed
+              ? Palette.red.withValues(alpha: 0.12)
+              : isUser
+                  ? Palette.gold.withValues(alpha: 0.14)
+                  : Palette.surface,
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(14),
+            topRight: const Radius.circular(14),
+            bottomLeft: Radius.circular(isUser ? 14 : 4),
+            bottomRight: Radius.circular(isUser ? 4 : 14),
+          ),
+        ),
+        child: SelectableText(
+          turn.text,
+          style: TextStyle(
+            fontSize: 14,
+            height: 1.55,
+            color: turn.failed ? Palette.red : const Color(0xFFE6E8EF),
           ),
         ),
       ),
@@ -806,158 +823,55 @@ class _VerdictPanel extends StatelessWidget {
   }
 }
 
-class _FailurePanel extends StatelessWidget {
-  const _FailurePanel({required this.vault, required this.onDone});
-  final VaultController vault;
-  final VoidCallback onDone;
+/// Explains itself if the model is slow, rather than looking frozen.
+class _Typing extends StatefulWidget {
+  const _Typing();
 
   @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(28),
-      child: Center(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.error_outline, size: 48, color: Palette.red),
-              const SizedBox(height: 16),
-              const Text('The job could not be cased',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 12),
-              Text(
-                vault.errorMessage ?? 'Something went wrong.',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Palette.muted, height: 1.5, fontSize: 13),
-              ),
-              const SizedBox(height: 10),
-              SelectableText(
-                'Sidecar: ${Config.sidecarUrl}',
-                style: const TextStyle(color: Palette.muted, fontSize: 11),
-              ),
-              const SizedBox(height: 24),
-              FilledButton(
-                onPressed: onDone,
-                style: FilledButton.styleFrom(
-                  backgroundColor: Palette.surfaceAlt,
-                  foregroundColor: Colors.white,
-                ),
-                child: const Text('Back to the vault'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+  State<_Typing> createState() => _TypingState();
+}
+
+class _TypingState extends State<_Typing> {
+  late final Stopwatch _elapsed = Stopwatch()..start();
+  Timer? _tick;
+
+  @override
+  void initState() {
+    super.initState();
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
   }
-}
-
-class _PlanJobDialog extends StatefulWidget {
-  const _PlanJobDialog();
-
-  @override
-  State<_PlanJobDialog> createState() => _PlanJobDialogState();
-}
-
-class _PlanJobDialogState extends State<_PlanJobDialog> {
-  JobKind _kind = JobKind.message;
-  final _title = TextEditingController();
-  final _body = TextEditingController();
-  final _amount = TextEditingController();
 
   @override
   void dispose() {
-    _title.dispose();
-    _body.dispose();
-    _amount.dispose();
+    _tick?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      backgroundColor: Palette.surface,
-      title: const Text('Plan a job'),
-      content: SizedBox(
-        width: 420,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SegmentedButton<JobKind>(
-                segments: const [
-                  ButtonSegment(
-                      value: JobKind.message,
-                      label: Text('Message'),
-                      icon: Icon(Icons.chat_bubble_outline)),
-                  ButtonSegment(
-                      value: JobKind.purchase,
-                      label: Text('Purchase'),
-                      icon: Icon(Icons.shopping_bag_outlined)),
-                ],
-                selected: {_kind},
-                onSelectionChanged: (s) => setState(() => _kind = s.first),
-              ),
-              const SizedBox(height: 18),
-              TextField(
-                controller: _title,
-                autofocus: true,
-                decoration: InputDecoration(
-                  labelText: _kind == JobKind.message ? 'Who is it to?' : 'What is it?',
-                  border: const OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              if (_kind == JobKind.purchase) ...[
-                TextField(
-                  controller: _amount,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'Amount',
-                    prefixText: '\$',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-              ],
-              TextField(
-                controller: _body,
-                maxLines: 3,
-                decoration: InputDecoration(
-                  labelText: _kind == JobKind.message ? 'The message' : 'Note to self',
-                  border: const OutlineInputBorder(),
-                ),
-              ),
+    final s = _elapsed.elapsed.inSeconds;
+    final note = s >= 18 ? 'Models are busy — still trying.' : (s >= 6 ? 'Thinking…' : null);
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 15,
+              height: 15,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Palette.muted),
+            ),
+            if (note != null) ...[
+              const SizedBox(width: 10),
+              Text(note, style: const TextStyle(fontSize: 12, color: Palette.muted)),
             ],
-          ),
+          ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          style: FilledButton.styleFrom(
-            backgroundColor: Palette.gold,
-            foregroundColor: Colors.black,
-          ),
-          onPressed: () {
-            final title = _title.text.trim();
-            if (title.isEmpty) return;
-            Navigator.of(context).pop(Job(
-              id: DateTime.now().microsecondsSinceEpoch.toString(),
-              kind: _kind,
-              title: title,
-              body: _body.text.trim().isEmpty ? null : _body.text.trim(),
-              amount:
-                  _kind == JobKind.purchase ? double.tryParse(_amount.text.trim()) : null,
-            ));
-          },
-          child: const Text('Into the vault'),
-        ),
-      ],
     );
   }
 }

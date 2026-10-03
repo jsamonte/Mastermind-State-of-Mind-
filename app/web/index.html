@@ -20,7 +20,7 @@
   -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
-  <meta name="description" content="Mastermind holds the things you'll regret until you're in a state to be trusted with them. It reads your pulse, breathing and heart-rate variability through your webcam, and keeps the vault shut until you're actually calm.">
+  <meta name="description" content="Don't get fooled by scammers, but more importantly don't fool yourself. Mastermind reads your pulse, breathing and heart-rate variability through your webcam and holds the things you'll regret until you're in a state to be trusted with them. Built for Rowdy Hacks 2026.">
 
   <!-- Match the app's charcoal so the browser chrome does not flash light. -->
   <meta name="theme-color" content="#0E0F13">
@@ -84,6 +84,14 @@
       letter-spacing: 3px;
       text-transform: uppercase;
     }
+    #boot .event {
+      font-size: 9px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #E8B931;
+      opacity: 0.75;
+      margin-top: -8px;
+    }
     /* Slow, even pulse - the app is about getting your breathing down. */
     @keyframes breathe {
       0%, 100% { opacity: 0.45; transform: scale(0.97); }
@@ -98,6 +106,7 @@
   <div id="boot">
     <div class="glyph"></div>
     <div class="word">Mastermind</div>
+    <div class="event">Rowdy Hacks 2026</div>
   </div>
 
   <script>
