@@ -490,15 +490,27 @@ class _SessionScreenState extends State<SessionScreen> {
                 ],
               );
             }
-            return Column(
-              children: [
-                SizedBox(
-                  height: (constraints.maxHeight * 0.52).clamp(320.0, 560.0).toDouble(),
-                  child: left,
-                ),
-                const Divider(height: 1, color: Palette.surfaceAlt),
-                Expanded(child: right),
-              ],
+            // A phone is one page, not two panes.
+            //
+            // Splitting the height between a camera pane and a chat pane works
+            // on a laptop and falls apart on a phone: an iPhone leaves about
+            // 590 logical pixels under the bars, so the camera pane was pinned
+            // at its 320 floor with roughly twice that much content inside it,
+            // and the conversation got the ~270 left over. Two cramped
+            // scrollers, neither of them comfortable, and the vitals needed
+            // scrolling INSIDE a box to reach.
+            //
+            // So on narrow screens the camera and numbers become the header of
+            // the conversation's own scroll view. One surface scrolls, the
+            // composer stays pinned, and the reading is simply the top of the
+            // page.
+            return _Chat(
+              session: _session,
+              header: _CameraAndStats(
+                session: _session,
+                scrollable: false,
+                compact: true,
+              ),
             );
           },
         ),
@@ -509,8 +521,33 @@ class _SessionScreenState extends State<SessionScreen> {
 
 /// Camera feed with the live Presage numbers under it.
 class _CameraAndStats extends StatelessWidget {
-  const _CameraAndStats({required this.session});
+  const _CameraAndStats({
+    required this.session,
+    this.scrollable = true,
+    this.compact = false,
+  });
   final SessionController session;
+
+  /// False when this is embedded in someone else's scroll view, as it is on a
+  /// phone. A scroll view nested in a scroll view has unbounded height and
+  /// throws, so the caller owns the scrolling in that case.
+  final bool scrollable;
+
+  /// Trades preview size for a reading you can take in without scrolling.
+  ///
+  /// A 4:3 preview is 272 logical pixels tall on a phone, which with the bars
+  /// and the verdict chip pushed two of the four vitals below the fold. The
+  /// point of the screen is the numbers, so on a phone the preview gives up the
+  /// height - it is still large enough to frame yourself in.
+  final bool compact;
+
+  /// The same padded content either way; only the scrolling differs.
+  Widget _maybeScroll(Widget child) {
+    const padding = EdgeInsets.all(16);
+    return scrollable
+        ? SingleChildScrollView(padding: padding, child: child)
+        : Padding(padding: padding, child: child);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -520,14 +557,13 @@ class _CameraAndStats extends StatelessWidget {
     // Scrollable: the preview is deliberately large now, and on a short window
     // a fixed column would overflow rather than letting the user reach the
     // numbers underneath it.
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
+    return _maybeScroll(
+      Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           SizedBox(
             child: AspectRatio(
-              aspectRatio: 4 / 3,
+              aspectRatio: compact ? 16 / 9 : 4 / 3,
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
                 child: Stack(
@@ -554,7 +590,7 @@ class _CameraAndStats extends StatelessWidget {
           const SizedBox(height: 14),
           _StateChip(reading: reading, measuring: session.phase == SessionPhase.measuring),
           const SizedBox(height: 12),
-          _Stats(reading: reading),
+          _Stats(reading: reading, compact: compact),
           if (reading != null && reading.isFinal && reading.reasons.isNotEmpty) ...[
             const SizedBox(height: 12),
             _Reasons(reasons: reading.reasons),
@@ -801,8 +837,11 @@ class _StateChip extends StatelessWidget {
 
 /// The Presage numbers.
 class _Stats extends StatelessWidget {
-  const _Stats({required this.reading});
+  const _Stats({required this.reading, this.compact = false});
   final Reading? reading;
+
+  /// Tighter rows so all four fit on a phone screen at once.
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -827,7 +866,7 @@ class _Stats extends StatelessWidget {
         children: [
           for (final (label, value, window) in rows)
             Padding(
-              padding: const EdgeInsets.symmetric(vertical: 10),
+              padding: EdgeInsets.symmetric(vertical: compact ? 6 : 10),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -854,7 +893,10 @@ class _Stats extends StatelessWidget {
                       ],
                       Text(
                         value,
-                        style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+                        style: TextStyle(
+                          fontSize: compact ? 19 : 22,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ],
                   ),
@@ -925,8 +967,13 @@ class _Reasons extends StatelessWidget {
 
 /// The conversation. One thread, always open — no list, no new-chat, no picker.
 class _Chat extends StatefulWidget {
-  const _Chat({required this.session});
+  const _Chat({required this.session, this.header});
   final SessionController session;
+
+  /// Scrolled WITH the conversation rather than sitting in a pane of its own.
+  /// Used on phones, where there is not enough height for two panes - see the
+  /// narrow branch in the vault screen's build.
+  final Widget? header;
 
   @override
   State<_Chat> createState() => _ChatState();
@@ -973,36 +1020,66 @@ class _ChatState extends State<_Chat> {
     final measuring = session.phase == SessionPhase.measuring ||
         session.phase == SessionPhase.starting;
 
+    final header = widget.header;
+
+    // The empty state only applies when nothing is in flight. Once the reading
+    // lands, the first Gemini call takes several seconds - showing "Waiting for
+    // a reading" through that reads as if nothing happened, when in fact the
+    // measurement is done and a reply is on its way.
+    final idle = turns.isEmpty && !session.awaitingReply;
+    final emptyState = measuring
+        ? _MeasuringGuide(session: session, scrollable: header == null)
+        : Center(
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Text(
+                session.phase == SessionPhase.talking
+                    ? 'The measurement landed, but no reply came back.'
+                    : 'Waiting for a reading.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Palette.muted, height: 1.6, fontSize: 13),
+              ),
+            ),
+          );
+
     return Column(
       children: [
         Expanded(
-          // The empty state only applies when nothing is in flight. Once the
-          // reading lands, the first Gemini call takes several seconds — showing
-          // "Waiting for a reading" through that reads as if nothing happened,
-          // when in fact the measurement is done and a reply is on its way.
-          child: (turns.isEmpty && !session.awaitingReply)
-              ? (measuring
-                  ? _MeasuringGuide(session: session)
-                  : Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(32),
-                        child: Text(
-                          session.phase == SessionPhase.talking
-                              ? 'The measurement landed, but no reply came back.'
-                              : 'Waiting for a reading.',
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: Palette.muted, height: 1.6, fontSize: 13),
+          child: header == null
+              ? (idle
+                  ? emptyState
+                  : ListView.builder(
+                      controller: _scroll,
+                      padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
+                      itemCount: turns.length + (session.awaitingReply ? 1 : 0),
+                      itemBuilder: (context, i) {
+                        if (i >= turns.length) return const _Typing();
+                        return _Bubble(turn: turns[i]);
+                      },
+                    ))
+              // One scroll: camera, numbers, then the conversation under them.
+              : CustomScrollView(
+                  controller: _scroll,
+                  slivers: [
+                    SliverToBoxAdapter(child: header),
+                    const SliverToBoxAdapter(
+                      child: Divider(height: 1, color: Palette.surfaceAlt),
+                    ),
+                    if (idle)
+                      SliverToBoxAdapter(child: emptyState)
+                    else
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
+                        sliver: SliverList(
+                          delegate: SliverChildBuilderDelegate(
+                            (context, i) => i >= turns.length
+                                ? const _Typing()
+                                : _Bubble(turn: turns[i]),
+                            childCount: turns.length + (session.awaitingReply ? 1 : 0),
+                          ),
                         ),
                       ),
-                    ))
-              : ListView.builder(
-                  controller: _scroll,
-                  padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
-                  itemCount: turns.length + (session.awaitingReply ? 1 : 0),
-                  itemBuilder: (context, i) {
-                    if (i >= turns.length) return const _Typing();
-                    return _Bubble(turn: turns[i]);
-                  },
+                  ],
                 ),
         ),
         const Divider(height: 1, color: Palette.surfaceAlt),
@@ -1066,8 +1143,12 @@ class _ChatState extends State<_Chat> {
 /// It lives in the conversation pane because that pane is empty for the whole
 /// measurement anyway, and a line of grey text was all it had to say.
 class _MeasuringGuide extends StatelessWidget {
-  const _MeasuringGuide({required this.session});
+  const _MeasuringGuide({required this.session, this.scrollable = true});
   final SessionController session;
+
+  /// False inside the phone's single page scroll, for the same reason as
+  /// [_CameraAndStats.scrollable].
+  final bool scrollable;
 
   static const _rules = <(IconData, String, String)>[
     (
@@ -1103,9 +1184,8 @@ class _MeasuringGuide extends StatelessWidget {
     final progress = total > 0 ? (elapsedMs / total).clamp(0.0, 1.0) : null;
     final secondsLeft = remainingMs > 0 ? (remainingMs / 1000).ceil() : null;
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-      child: Center(
+    const guidePadding = EdgeInsets.symmetric(horizontal: 28, vertical: 32);
+    final body = Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 460),
           child: Column(
@@ -1163,8 +1243,11 @@ class _MeasuringGuide extends StatelessWidget {
             ],
           ),
         ),
-      ),
-    );
+      );
+
+    return scrollable
+        ? SingleChildScrollView(padding: guidePadding, child: body)
+        : Padding(padding: guidePadding, child: body);
   }
 }
 
