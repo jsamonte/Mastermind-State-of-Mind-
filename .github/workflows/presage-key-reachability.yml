@@ -1,0 +1,81 @@
+# Does the Presage key work from a datacenter that is not Google's?
+#
+# The hosted sidecar on Cloud Run cannot measure: the SDK reports
+# "SmartSpectra authentication failed" within about five seconds, every time.
+# The same key, same SDK version, authenticates fine from a laptop - on Windows
+# and on Linux under WSL - so it is not the operating system, the container or
+# the frame format. What has not been established is whether Presage refuses
+# datacenter addresses in general or Google's in particular, and that single
+# fact decides whether a fully hosted version is possible at all.
+#
+# GitHub's hosted runners are Azure machines, so this answers it. The job
+# streams synthetic frames at a local sidecar and prints how far the pipeline
+# gets:
+#
+#   processing status 3  ->  the key authenticated. A fully cloud version is
+#                            possible; Cloud Run needs a different host or
+#                            egress address.
+#   authentication failed ->  the key is refused from datacenters generally.
+#                            No amount of engineering fixes that - it needs
+#                            credentials from Presage that permit server use.
+#
+# Manual trigger only, and it needs one repository secret: PRESAGE_API_KEY
+# (Settings -> Secrets and variables -> Actions -> New repository secret).
+name: Presage key reachability
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install the sidecar
+        working-directory: sidecar
+        run: npm install --no-audit --no-fund
+
+      - name: Where is this runner
+        run: |
+          echo "egress address: $(curl -s --max-time 10 https://api.ipify.org || echo unknown)"
+          echo "presage reachable: $(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://cont-api.physiology.presagetech.com/ || echo unreachable)"
+
+      - name: Probe
+        working-directory: sidecar
+        env:
+          PRESAGE_API_KEY: ${{ secrets.PRESAGE_API_KEY }}
+        run: |
+          if [ -z "$PRESAGE_API_KEY" ]; then
+            echo "::error::PRESAGE_API_KEY secret is not set - add it in repository settings."
+            exit 1
+          fi
+          node src/server.mjs > /tmp/sidecar.log 2>&1 &
+          # Wait for it rather than sleeping blind: startup loads a native
+          # runtime and ML models, which is slow and variable on a cold runner.
+          for _ in $(seq 1 60); do
+            curl -sf --max-time 2 http://127.0.0.1:8787/health >/dev/null && break
+            sleep 2
+          done
+          node probe_cloudrun.mjs ws://127.0.0.1:8787 25 2>&1 | grep -v "not in a valid state" | head -20
+
+      - name: Verdict
+        if: always()
+        working-directory: sidecar
+        run: |
+          echo "--- sidecar log ---"
+          grep -vE "inference_feedback_manager|absl::InitializeLog" /tmp/sidecar.log | tail -25
+          if grep -q "authentication failed" /tmp/sidecar.log; then
+            echo "VERDICT: the key is refused from this datacenter too. A fully hosted"
+            echo "version needs credentials from Presage that permit server use."
+          elif grep -q '"status":3' /tmp/sidecar.log || grep -q "processing: 3" /tmp/sidecar.log; then
+            echo "VERDICT: the key authenticated here. The refusal is specific to"
+            echo "Google's network, so hosting the sidecar elsewhere would work."
+          else
+            echo "VERDICT: inconclusive - read the log above."
+          fi
