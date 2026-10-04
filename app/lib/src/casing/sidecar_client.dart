@@ -62,7 +62,12 @@ class SidecarClient {
   ///
   /// Throws [SidecarError] if the sidecar is not running — which is the common
   /// case worth a good message, since the whole app is useless without it.
-  Future<void> connect({Duration timeout = const Duration(seconds: 5)}) async {
+  /// [timeout] is generous on purpose. The companion app runs on Cloud Run with
+  /// min-instances 0, so the first request after an idle period has to start a
+  /// container that loads a native runtime and ML models. Five seconds — fine
+  /// against a process already running on localhost — guarantees a failure on
+  /// every cold start, which looks exactly like the service being down.
+  Future<void> connect({Duration timeout = const Duration(seconds: 75)}) async {
     if (_channel != null) return;
 
     _ready = Completer<void>();

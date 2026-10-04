@@ -21,6 +21,12 @@ class CameraError implements Exception {
   /// True when there simply is no camera.
   bool get isMissingDevice => name == 'NotFoundError' || name == 'DevicesNotFoundError';
 
+  /// True when the camera exists but something else already holds it — another
+  /// tab running this app, a video call, or any other program using the webcam.
+  /// Common and user-fixable, so it earns its own message rather than leaking
+  /// the browser's `NotReadableError`.
+  bool get isInUse => name == 'NotReadableError' || name == 'TrackStartError';
+
   @override
   String toString() => '$name: $message';
 }

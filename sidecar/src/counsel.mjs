@@ -278,6 +278,23 @@ export function createCounsellor({ apiKey = process.env.GEMINI_API_KEY } = {}) {
           const json = await response.json().catch(() => null);
 
           if (!response.ok) {
+            // Billing and quota failures are not something the person in front
+            // of the camera can act on, and Google's wording ("Your prepayment
+            // credits are depleted... manage your project and billing") puts the
+            // operator's account state on a stranger's screen. Log the real
+            // reason, show a plain one. Walking the model chain is pointless
+            // here too: the ACCOUNT is out, not the model.
+            if (response.status === 402 || response.status === 429) {
+              console.error(
+                `  [counsel] account/quota failure ${response.status}: ${json?.error?.message ?? ""}`,
+              );
+              const err = new Error(
+                "The conversation is unavailable right now — your measurement " +
+                  "and state reading are unaffected.",
+              );
+              err.status = response.status;
+              throw err;
+            }
             const err = new Error(json?.error?.message ?? `Gemini returned ${response.status}`);
             err.status = response.status;
             throw err;

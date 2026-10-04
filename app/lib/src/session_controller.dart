@@ -105,6 +105,17 @@ class SessionController extends ChangeNotifier {
     statusLine = 'Connecting…';
     notifyListeners();
 
+    // The hosted service scales to zero when idle, so the first connection
+    // after a quiet spell waits for a container to boot. Silence through that
+    // is indistinguishable from the service being down, and people give up long
+    // before it is ready.
+    final waking = Timer(const Duration(seconds: 4), () {
+      if (phase != SessionPhase.starting) return;
+      statusLine = 'Waking the measurement service — the first use after a '
+          'quiet spell can take up to a minute.';
+      notifyListeners();
+    });
+
     try {
       await _sidecar.connect();
       _mock = _sidecar.sourceMode == 'mock';
@@ -117,6 +128,8 @@ class SessionController extends ChangeNotifier {
           : 'Cannot reach the measurement service on ${Config.sidecarUrl}. '
               'Start it with `npm run start:real` in sidecar/, then retry.');
       return;
+    } finally {
+      waking.cancel();
     }
 
     _readingSub = _sidecar.readings.listen((r) {
@@ -180,7 +193,11 @@ class SessionController extends ChangeNotifier {
           ? 'Camera permission denied. Mastermind cannot read your state without it.'
           : e.isMissingDevice
               ? 'No camera found.'
-              : 'Camera problem — $e');
+              : e.isInUse
+                  ? 'Your camera is already in use by something else. Close any '
+                      'other tab running Mastermind, plus any video call, then '
+                      'press Try again.'
+                  : 'Camera problem — $e');
     } catch (e) {
       _fail(e is SidecarError ? e.message : '$e');
     }
