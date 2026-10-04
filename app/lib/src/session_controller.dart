@@ -43,6 +43,10 @@ class SessionController extends ChangeNotifier {
               width: Config.captureWidth,
               height: Config.captureHeight,
               fps: Config.captureFps,
+              // Raw over loopback, compressed over a network — raw cannot fit
+              // on a real uplink. See Config.compressFrames.
+              compress: Config.compressFrames,
+              jpegQuality: Config.jpegQuality,
             );
 
   final SidecarClient _sidecar;
@@ -158,8 +162,9 @@ class SessionController extends ChangeNotifier {
       statusLine = 'Opening the camera…';
       notifyListeners();
 
-      await _camera.start(onFrame: (rgb, w, h, ts) {
-        _sidecar.sendFrame(width: w, height: h, rgb: rgb, timestampUs: ts);
+      await _camera.start(onFrame: (bytes, w, h, ts, format) {
+        _sidecar.sendFrame(
+          width: w, height: h, rgb: bytes, timestampUs: ts, pixelFormat: format);
       });
 
       phase = SessionPhase.measuring;

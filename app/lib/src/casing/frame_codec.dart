@@ -21,29 +21,41 @@ class FrameCodec {
   static const int headerBytes = 20;
   static const int pixelFormatRgb24 = 0;
 
-  /// Builds one wire frame from packed RGB24 [pixels].
+  /// JPEG-compressed payload, decoded back to RGB by the sidecar.
   ///
-  /// Throws [ArgumentError] if [pixels] does not match the declared dimensions,
-  /// because the sidecar would reject it anyway and a local failure is easier to
-  /// debug than a socket error.
+  /// Used whenever frames leave the machine: raw RGB24 at 30fps is far more
+  /// bandwidth than a real uplink carries, so almost none of it arrives.
+  static const int pixelFormatJpeg = 1;
+
+  /// Builds one wire frame.
+  ///
+  /// For [pixelFormatRgb24], throws [ArgumentError] if [pixels] does not match
+  /// the declared dimensions — the sidecar would reject it anyway, and a local
+  /// failure is easier to debug than a socket error. Compressed payloads are
+  /// variable-length, so no such check is possible.
   static Uint8List encode({
     required int width,
     required int height,
     required double timestampUs,
     required Uint8List pixels,
+    int pixelFormat = pixelFormatRgb24,
   }) {
-    final expected = width * height * 3;
-    if (pixels.length != expected) {
-      throw ArgumentError(
-        'expected $expected bytes of RGB24 for ${width}x$height, got ${pixels.length}',
-      );
+    if (pixelFormat == pixelFormatRgb24) {
+      final expected = width * height * 3;
+      if (pixels.length != expected) {
+        throw ArgumentError(
+          'expected $expected bytes of RGB24 for ${width}x$height, got ${pixels.length}',
+        );
+      }
+    } else if (pixels.isEmpty) {
+      throw ArgumentError('compressed frame has no payload');
     }
 
     final out = Uint8List(headerBytes + pixels.length);
     final header = ByteData.sublistView(out, 0, headerBytes);
     header.setUint16(0, magic, Endian.little);
     header.setUint8(2, protocolVersion);
-    header.setUint8(3, pixelFormatRgb24);
+    header.setUint8(3, pixelFormat);
     header.setUint32(4, width, Endian.little);
     header.setUint32(8, height, Endian.little);
     header.setFloat64(12, timestampUs, Endian.little);

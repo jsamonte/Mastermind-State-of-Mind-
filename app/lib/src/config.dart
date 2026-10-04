@@ -143,10 +143,33 @@ class Config {
         ua.contains('mobile');
   }
 
-  /// Capture size. Smaller on mobile: the frames cross a network rather than
-  /// loopback, and phone uplink is the binding constraint.
-  static int get captureWidth => isLikelyMobile ? 320 : 640;
-  static int get captureHeight => isLikelyMobile ? 240 : 480;
+  /// True when the companion app is on this machine, where bandwidth is free.
+  static bool get sidecarIsLoopback {
+    final host = Uri.tryParse(sidecarUrl)?.host;
+    return host == '127.0.0.1' || host == 'localhost' || host == '::1';
+  }
+
+  /// Whether to compress frames before sending them.
+  ///
+  /// Raw RGB cannot cross a network. Measured against the hosted service:
+  /// 640x480 RGB24 at 30fps is 27.6 MB/s, while the real upload to Cloud Run
+  /// was 3.5 MB/s — so almost no frames arrived and Presage produced no output
+  /// at all. JPEG at 320x240 measures 2.28 MB/s worst case, inside that budget.
+  ///
+  /// Loopback stays RAW. Compression is lossy, and Presage reads a pulse from
+  /// ~1% colour changes in skin, so the local path keeps perfect fidelity and
+  /// remains the reference a compressed reading should be checked against.
+  static bool get compressFrames => !sidecarIsLoopback;
+
+  /// Quality for compressed frames. High on purpose: the usual reason to drop
+  /// quality is file size, and the thing being destroyed here would be the
+  /// signal itself.
+  static double get jpegQuality => 0.9;
+
+  /// Capture size. Smaller whenever frames leave the machine — over a network
+  /// the uplink, not the camera, is the binding constraint.
+  static int get captureWidth => (isLikelyMobile || compressFrames) ? 320 : 640;
+  static int get captureHeight => (isLikelyMobile || compressFrames) ? 240 : 480;
   /// Presage rejects anything under 25fps outright — its validation stream says
   /// "Use a camera mode that provides at least 25 frames per second", and until
   /// it is satisfied no metric ever resolves, so the casing just runs out. 15
@@ -157,6 +180,11 @@ class Config {
 
   /// Bytes per second this configuration will push at the sidecar.
   /// Surfaced in the diagnostics panel because it is easy to get wrong.
-  static int get estimatedBytesPerSecond =>
-      captureWidth * captureHeight * 3 * captureFps;
+  ///
+  /// The compressed figure is a worst case measured on synthetic noise; real
+  /// camera frames compress several times better than that.
+  static int get estimatedBytesPerSecond {
+    final raw = captureWidth * captureHeight * 3 * captureFps;
+    return compressFrames ? (raw ~/ 3) : raw;
+  }
 }

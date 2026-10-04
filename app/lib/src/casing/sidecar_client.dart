@@ -150,10 +150,12 @@ class SidecarClient {
     required int height,
     required Uint8List rgb,
     required double timestampUs,
+    int pixelFormat = FrameCodec.pixelFormatRgb24,
   }) {
     final channel = _channel;
     if (channel == null) return;
     channel.sink.add(FrameCodec.encode(
+      pixelFormat: pixelFormat,
       width: width,
       height: height,
       timestampUs: timestampUs,

@@ -23,6 +23,7 @@ import { createServer } from "node:http";
 import process from "node:process";
 import { createAuthMinter } from "./auth.mjs";
 import { createCounsellor } from "./counsel.mjs";
+import { decodeJpegFrame } from "./jpeg_frame.mjs";
 import { decodeFrame, VERSION as PROTOCOL_VERSION } from "./protocol.mjs";
 import { composure } from "./composure.mjs";
 import { createMockSource, SCENARIOS } from "./mock.mjs";
@@ -463,7 +464,9 @@ wss.on("connection", (ws, req) => {
       }
       session.frames += 1;
       try {
-        session.source.sendFrame(frame);
+        // The SDK only takes raw pixels. A compressed frame is decoded here, at
+        // the edge, so nothing downstream has to know the wire format.
+        session.source.sendFrame(frame.pixelFormat === "jpeg" ? decodeJpegFrame(frame) : frame);
       } catch (err) {
         send({ type: "error", code: "send_frame_failed", message: String(err?.message ?? err) });
       }

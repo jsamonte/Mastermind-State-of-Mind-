@@ -25,8 +25,18 @@ export const VERSION = 1;
 export const HEADER_BYTES = 20;
 
 /** pixelFormat wire values -> a name the SDK layer can map to its own enum. */
-export const PIXEL_FORMATS = { 0: "rgb24" };
+export const PIXEL_FORMATS = { 0: "rgb24", 1: "jpeg" };
 export const PIXEL_FORMAT_RGB24 = 0;
+
+/**
+ * JPEG-compressed frame, decoded back to RGB24 by the sidecar.
+ *
+ * Needed because raw frames cannot cross a network. Measured against the hosted
+ * service: 640x480 RGB24 at 30fps is 27.6 MB/s, while real upload to Cloud Run
+ * was 3.5 MB/s — so almost no frames arrived and Presage had nothing to read.
+ * Loopback keeps using rgb24, where bandwidth is free and fidelity is perfect.
+ */
+export const PIXEL_FORMAT_JPEG = 1;
 
 /**
  * Decode a binary frame message.
@@ -69,13 +79,31 @@ export function decodeFrame(data) {
   }
 
   const stride = width * 3;
-  const expected = stride * height;
   const pixels = buf.subarray(HEADER_BYTES);
-  if (pixels.length !== expected) {
-    throw fail(
-      "payload_size_mismatch",
-      `${width}x${height} RGB24 needs ${expected}B of pixels, got ${pixels.length}B`,
-    );
+
+  if (pixelFormat === "rgb24") {
+    // A frame whose declared size disagrees with its payload is the dangerous
+    // case: passing it on would hand the SDK a buffer overrun.
+    const expected = stride * height;
+    if (pixels.length !== expected) {
+      throw fail(
+        "payload_size_mismatch",
+        `${width}x${height} RGB24 needs ${expected}B of pixels, got ${pixels.length}B`,
+      );
+    }
+  } else {
+    // Compressed payloads are variable-length by nature, so size cannot be
+    // checked against the dimensions. Reject the obviously-wrong instead: an
+    // empty payload, or one larger than the raw frame it claims to encode.
+    if (pixels.length === 0) {
+      throw fail("payload_size_mismatch", "compressed frame carried no payload");
+    }
+    if (pixels.length > stride * height) {
+      throw fail(
+        "payload_size_mismatch",
+        `compressed frame is ${pixels.length}B, larger than the ${stride * height}B raw frame it claims`,
+      );
+    }
   }
 
   return { width, height, stride, pixelFormat, timestampUs, pixels };

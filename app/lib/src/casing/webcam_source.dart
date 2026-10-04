@@ -44,7 +44,26 @@ class WebcamSource {
     this.height = 480,
     this.fps = 15,
     this.deviceId,
+    this.compress = false,
+    this.jpegQuality = 0.9,
   });
+
+  /// Compress frames to JPEG before sending.
+  ///
+  /// Off by default, and off on loopback: compression is lossy and Presage
+  /// recovers a pulse from ~1% colour changes in skin. It is turned on only
+  /// where raw cannot physically fit — over a network, where 640x480 RGB24 at
+  /// 30fps is 27.6 MB/s against a measured 3.5 MB/s uplink.
+  final bool compress;
+  final double jpegQuality;
+
+  /// Wire format identifiers, passed to the frame callback so the caller does
+  /// not have to re-derive which encoding it is looking at.
+  static const int rawFormat = FrameCodec.pixelFormatRgb24;
+  static const int jpegFormat = FrameCodec.pixelFormatJpeg;
+
+  /// True while an encode is in flight, so frames are skipped rather than queued.
+  bool _encoding = false;
 
   /// Which camera to open, or null to let the browser choose.
   ///
@@ -109,7 +128,9 @@ class WebcamSource {
   ///
   /// Throws [CameraError] on permission denial or missing hardware.
   Future<void> start({
-    required void Function(Uint8List rgb, int width, int height, double timestampUs) onFrame,
+    required void Function(
+      Uint8List bytes, int width, int height, double timestampUs, int pixelFormat,
+    ) onFrame,
   }) async {
     if (_timer != null) return;
 
@@ -173,10 +194,29 @@ class WebcamSource {
     _startedAtUs = DateTime.now().microsecondsSinceEpoch;
     final interval = Duration(microseconds: (1000000 / fps).round());
     _timer = Timer.periodic(interval, (_) {
-      final frame = _grab();
-      if (frame != null) {
-        onFrame(frame, width, height, _elapsedUs());
+      // The timestamp is taken when the frame is DRAWN, not when encoding
+      // finishes. Compression is asynchronous, so stamping it afterwards would
+      // record encode latency as elapsed time and jitter the frame clock that
+      // Presage uses to recover a pulse.
+      final capturedAtUs = _elapsedUs();
+
+      if (!compress) {
+        final frame = _grab();
+        if (frame != null) onFrame(frame, width, height, capturedAtUs, rawFormat);
+        return;
       }
+
+      // Skip rather than queue when an encode is still in flight. Backing up
+      // would send frames progressively further behind the camera, and a stale
+      // frame is worse than a missing one for a measurement reading change
+      // over time.
+      if (_encoding) return;
+      _encoding = true;
+      _grabCompressed()
+          .then((frame) {
+            if (frame != null) onFrame(frame, width, height, capturedAtUs, jpegFormat);
+          })
+          .whenComplete(() => _encoding = false);
     });
   }
 
@@ -239,6 +279,41 @@ class WebcamSource {
     final data = ctx.getImageData(0, 0, width, height).data.toDart;
     final rgba = Uint8List.view(data.buffer, data.offsetInBytes, data.lengthInBytes);
     return FrameCodec.rgbaToRgb24(rgba, width, height);
+  }
+
+  /// Draws the current frame and returns it JPEG-encoded.
+  ///
+  /// Uses the browser's own encoder via `toBlob`, which is asynchronous and
+  /// runs off the main thread — meaningfully cheaper than encoding in Dart at
+  /// 30fps. Returns null when there is nothing to draw.
+  Future<Uint8List?> _grabCompressed() async {
+    final video = _video;
+    final ctx = _ctx;
+    final canvas = _canvas;
+    if (video == null || ctx == null || canvas == null) return null;
+    if (video.videoWidth == 0 || video.videoHeight == 0) return null;
+    if (video.paused) return null;
+
+    ctx.drawImage(video, 0, 0, width.toDouble(), height.toDouble());
+
+    final blob = await _toBlob(canvas, jpegQuality);
+    if (blob == null) return null;
+    final buffer = await blob.arrayBuffer().toDart;
+    return buffer.toDart.asUint8List();
+  }
+
+  /// `toBlob` is callback-based; this adapts it to a Future and never hangs the
+  /// capture loop if the browser hands back null.
+  static Future<web.Blob?> _toBlob(web.HTMLCanvasElement canvas, double quality) {
+    final done = Completer<web.Blob?>();
+    canvas.toBlob(
+      ((web.Blob? b) {
+        if (!done.isCompleted) done.complete(b);
+      }).toJS,
+      'image/jpeg',
+      quality.toJS,
+    );
+    return done.future;
   }
 
   /// Stops capture and releases the camera. Safe to call repeatedly.
