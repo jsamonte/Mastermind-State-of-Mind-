@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:web/web.dart' as web;
 
+import 'backend/sidecar_directory.dart';
 import 'casing/sidecar_client.dart';
 import 'casing/webcam_source.dart';
 import 'config.dart';
@@ -49,7 +50,9 @@ class SessionController extends ChangeNotifier {
               jpegQuality: Config.jpegQuality,
             );
 
-  final SidecarClient _sidecar;
+  /// Not final: a casing can outlive the address it started with, because
+  /// tunnel hostnames are replaced when they expire. See [start].
+  SidecarClient _sidecar;
   final WebcamSource _camera;
   final CounselClient _counsel;
 
@@ -121,6 +124,23 @@ class SessionController extends ChangeNotifier {
     });
 
     try {
+      await _sidecar.connect();
+      _mock = _sidecar.sourceMode == 'mock';
+    } on SidecarError catch (_) {
+      // The address may simply have moved. Tunnel hostnames are ephemeral and
+      // get replaced automatically when one expires, which leaves an already
+      // open page dialling an address that stopped existing - it worked, then
+      // it did not, and reloading fixed it. Look the address up again and try
+      // once more before telling anyone anything is wrong.
+      final found = await SidecarDirectory().discover();
+      if (found == null || found == _sidecar.url) rethrow;
+
+      debugPrint('Mastermind: sidecar moved to $found, retrying');
+      statusLine = 'Reconnecting…';
+      notifyListeners();
+
+      await _sidecar.dispose();
+      _sidecar = SidecarClient(url: found);
       await _sidecar.connect();
       _mock = _sidecar.sourceMode == 'mock';
     } catch (e) {

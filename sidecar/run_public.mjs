@@ -51,6 +51,8 @@ const log = (...args) => console.log(new Date().toISOString().slice(11, 19), ...
 
 let sidecar = null;
 let tunnel = null;
+/** True while a tunnel is being deliberately swapped, so its exit is expected. */
+let replacing = false;
 let tunnelHost = null;
 let published = null;
 let sidecarFailures = 0;
@@ -103,12 +105,16 @@ function startTunnel() {
   tunnel.on("exit", (code, signal) => {
     tunnel = null;
     if (stopping) return;
+    // replaceTunnel() is already starting one. Without this guard, killing the
+    // old process fires this handler, which starts a tunnel, and then
+    // replaceTunnel starts a second - leaving two cloudflared processes with
+    // two hostnames, only one of which is published.
+    if (replacing) return;
     log(`tunnel exited (code ${code}, signal ${signal}) - restarting`);
     setTimeout(startTunnel, 1_000);
   });
 }
 
-let replacing = false;
 function replaceTunnel() {
   if (replacing || stopping) return;
   replacing = true;
