@@ -79,6 +79,27 @@ class Config {
     }
   }
 
+  /// True only when THIS page load pinned an address with `?sidecar=`.
+  ///
+  /// Deliberately does not consider the remembered value. A remembered address
+  /// is usually one discovery adopted earlier, and tunnel hostnames expire — so
+  /// treating "remembered" as "pinned" made the app skip discovery and keep
+  /// dialling a dead tunnel forever, which is exactly what it did.
+  static bool get hasPinnedSidecar {
+    final fromQuery = Uri.base.queryParameters['sidecar'];
+    return fromQuery != null && fromQuery.isNotEmpty;
+  }
+
+  /// Adopts an address discovered at runtime (see `SidecarDirectory`).
+  ///
+  /// Overwrites whatever was remembered: the freshly published address is by
+  /// definition more current than a cached one. Only an explicit `?sidecar=`
+  /// on this page load outranks it.
+  static void adoptDiscovered(String url) {
+    if (hasPinnedSidecar || url.isEmpty) return;
+    _remember(_sidecarKey, url);
+  }
+
   /// Clears a remembered sidecar address, so a stale tunnel URL can be dropped
   /// without clearing all site data.
   static void forgetSidecar() {

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'src/auth/auth0_client.dart';
 import 'src/backend/auth_bridge.dart';
 import 'src/backend/firestore_store.dart';
+import 'src/backend/sidecar_directory.dart';
 import 'src/config.dart';
 import 'src/counsel/counsel_client.dart';
 import 'src/firebase_options.dart';
@@ -24,9 +25,15 @@ Future<void> main() async {
 
   try {
     await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+    // Ask where the companion app is before anything tries to connect. Tunnel
+    // hostnames are ephemeral, so a hardcoded or remembered one goes stale;
+    // this is what lets the bare hosted link work without passing URLs around.
+    // It never throws and never blocks startup for long.
+    await SidecarDirectory().discover();
   } catch (e) {
-    // Persistence is a bonus, not a prerequisite. If Firebase cannot start, the
-    // measurement and the conversation must still work.
+    // Persistence and discovery are both bonuses, not prerequisites. If Firebase
+    // cannot start, the measurement and the conversation must still work.
     debugPrint('Mastermind: Firebase init failed, continuing without it: $e');
   }
   runApp(const MastermindApp());

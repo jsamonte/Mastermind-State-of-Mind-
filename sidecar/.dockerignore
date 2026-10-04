@@ -1,0 +1,7 @@
+node_modules
+bin/
+.env
+.env.*
+serviceAccountKey.json
+*.log
+src/*.test.mjs

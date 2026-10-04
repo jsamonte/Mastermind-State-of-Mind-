@@ -37,10 +37,10 @@ class Auth0Client {
 
   /// The id_token from a previous login, if it is still valid.
   String? get storedIdToken {
-    final token = _read(_tokenKey);
+    final token = _readPersistent(_tokenKey);
     if (token == null) return null;
     if (_isExpired(token)) {
-      _remove(_tokenKey);
+      _removePersistent(_tokenKey);
       return null;
     }
     return token;
@@ -140,12 +140,12 @@ class Auth0Client {
     if (idToken is! String) {
       throw const Auth0Error('no_id_token', 'Auth0 returned no id_token.');
     }
-    _write(_tokenKey, idToken);
+    _writePersistent(_tokenKey, idToken);
     return idToken;
   }
 
   void logout({bool federated = false}) {
-    _remove(_tokenKey);
+    _removePersistent(_tokenKey);
     final url = Uri.https(domain, '/v2/logout', {
       'client_id': clientId,
       'returnTo': redirectUri,
@@ -186,6 +186,37 @@ class Auth0Client {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
     final rng = Random.secure();
     return List.generate(length, (_) => chars[rng.nextInt(chars.length)]).join();
+  }
+
+  /// The id_token lives in localStorage so a sign-in survives new tabs and
+  /// restarts — otherwise every tab demands a fresh Auth0 round trip.
+  ///
+  /// The PKCE verifier and the state nonce deliberately stay in sessionStorage
+  /// (below): they are single-use, scoped to one in-flight authorization, and
+  /// persisting them past that flow would widen the window for replay without
+  /// buying anything.
+  static String? _readPersistent(String key) {
+    try {
+      return web.window.localStorage.getItem(key);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static void _writePersistent(String key, String value) {
+    try {
+      web.window.localStorage.setItem(key, value);
+    } catch (_) {
+      /* ignored */
+    }
+  }
+
+  static void _removePersistent(String key) {
+    try {
+      web.window.localStorage.removeItem(key);
+    } catch (_) {
+      /* ignored */
+    }
   }
 
   // sessionStorage can throw in private windows; never let that break login.

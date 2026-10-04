@@ -15,7 +15,9 @@
     "test": "node src/composure.test.mjs && node src/protocol.test.mjs && node src/counsel.test.mjs && node src/e2e.test.mjs",
     "test:live": "node --env-file-if-exists=.env src/counsel.test.mjs --live",
     "start:real": "node start-real.mjs",
-    "tunnel": "\"./bin/cloudflared.exe\" tunnel --url http://127.0.0.1:8787 --no-autoupdate --protocol http2"
+    "tunnel": "\"./bin/cloudflared.exe\" tunnel --url http://127.0.0.1:8787 --no-autoupdate --protocol http2 2>&1 | tee tunnel.log",
+    "publish:url": "node publish_sidecar_url.mjs --log tunnel.log",
+    "offline": "node publish_sidecar_url.mjs --clear"
   },
   "dependencies": {
     "firebase-admin": "^14.5.0",

@@ -11,13 +11,28 @@
  */
 
 /** Weights per signal. Only *available* signals are used; the rest are renormalized. */
+/**
+ * Weights per signal. Only *available* signals are used; the rest are renormalized.
+ *
+ * Rebalanced from real readings. The original split gave the two HRV-derived
+ * signals half the total weight (stressIndex .28 + rmssd .22), which looked
+ * principled — they are the most stress-shaped numbers Presage produces — but
+ * made the whole score hostage to them. In practice Presage reports pulse and
+ * breathing with usable confidence long before HRV, and often reports HRV
+ * confidence as zero; HRV needs ~60s of clean signal where breathing needs ~30.
+ * With HRV dropped, coverage reached only 0.35 against a 0.5 floor, so EVERY
+ * real measurement came back inconclusive even while showing live vitals.
+ *
+ * Pulse + breathing alone now clear the floor (0.55), so a reading lands on the
+ * signals that actually arrive. HRV still carries real weight when it shows up.
+ */
 export const WEIGHTS = {
-  stressIndex: 0.28, // Baevsky SI - the most directly stress-shaped number we get
+  pulseRate: 0.30,
+  breathingRate: 0.25,
   rmssd: 0.22,       // parasympathetic ("rest and digest") tone
-  pulseRate: 0.18,
-  breathingRate: 0.17,
-  expression: 0.10,
-  eda: 0.05,         // experimental: relative arousal trace, deliberately low weight
+  stressIndex: 0.18, // Baevsky SI
+  expression: 0.03,  // only populated if faceMetrics is requested
+  eda: 0.02,         // only populated if edaMetrics is requested
 };
 
 /**
@@ -99,8 +114,28 @@ function scoreEda(trace) {
  * Tuned from commonly cited resting ranges for healthy adults - they are
  * starting points for calibration, not population truth.
  */
+/**
+ * Puts Presage's Baevsky value onto the classical scale.
+ *
+ * Presage reports it "without a unit, matching the HRV model card", and real
+ * readings from this app come back as 0.6-1.2. The classical Stress Index
+ * (AMo / (2 * Mo * MxDMn), with AMo as a percentage) puts resting adults at
+ * roughly 50-150 — the same readings two orders of magnitude up. So Presage's
+ * figure is the classical one with AMo as a fraction rather than a percent.
+ *
+ * Scaled by detection rather than assumption: anything below 10 is on Presage's
+ * unitless scale, anything above is already classical. That way the reference
+ * band stays meaningful if a future SDK changes the convention, instead of
+ * silently scoring every reading as perfectly calm — which is what the
+ * unscaled comparison did.
+ */
+function normaliseStressIndex(value) {
+  return value < 10 ? value * 100 : value;
+}
+
 export const REFERENCE = {
-  // Baevsky Stress Index (arbitrary units). ~50-150 is typically called normal.
+  // Baevsky Stress Index, CLASSICAL scale. ~50-150 is typically called normal.
+  // Inputs are put on this scale by normaliseStressIndex() above.
   stressIndex: { good: 150, bad: 600 },
   // RMSSD in ms - higher is calmer.
   rmssd: { good: 60, bad: 15 },
@@ -110,8 +145,17 @@ export const REFERENCE = {
   breathingRate: { lo: 10, hi: 16, slackLo: 6, slackHi: 26 },
 };
 
-/** Minimum SDK-reported confidence before a signal is allowed to count. */
-export const MIN_CONFIDENCE = 0.5;
+/**
+ * Minimum SDK-reported confidence before a signal counts.
+ *
+ * Presage reports confidence as a PERCENTAGE in [0, 100] — not a 0..1 fraction
+ * (see docs/data-types: "expressed as a percentage in the range [0.0, 100.0]").
+ * This was written as 0.5 on the assumption of a fraction, which made it a
+ * 0.5% gate — i.e. no gate at all for anything non-zero. Kept deliberately
+ * permissive on the correct scale: the weight system already de-rates a signal
+ * by dropping it, and being stricter here mostly produces refusals.
+ */
+export const MIN_CONFIDENCE = 1; // percent
 /** Signals must cover at least this much total weight, or the reading is inconclusive. */
 export const MIN_WEIGHT_COVERAGE = 0.5;
 
@@ -139,7 +183,11 @@ export function composure(signals = {}, thresholds = {}) {
 
   const si = confident(signals.stressIndex, signals.hrvConfidence);
   if (si != null) {
-    parts.stressIndex = ramp(si, REFERENCE.stressIndex.good, REFERENCE.stressIndex.bad);
+    parts.stressIndex = ramp(
+      normaliseStressIndex(si),
+      REFERENCE.stressIndex.good,
+      REFERENCE.stressIndex.bad,
+    );
   }
 
   const rmssd = confident(signals.rmssd, signals.hrvConfidence);

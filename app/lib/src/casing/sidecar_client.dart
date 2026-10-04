@@ -71,7 +71,10 @@ class SidecarClient {
       _channel = channel;
       _sub = channel.stream.listen(
         _onMessage,
-        onError: (Object e) => _fail(SidecarError('socket_error', '$e', fatal: true)),
+        // Never surface the raw exception. A visitor who opened the hosted link
+        // saw "WebSocketChannelException: Failed to connect WebSocket", which
+        // tells them nothing about what is wrong or what to do about it.
+        onError: (Object _) => _fail(SidecarError('socket_error', _unreachable, fatal: true)),
         onDone: () => _fail(
           SidecarError('disconnected', 'The sidecar closed the connection.', fatal: true),
         ),
@@ -80,16 +83,30 @@ class SidecarClient {
       await _ready!.future.timeout(timeout);
     } on TimeoutException {
       await disconnect();
-      throw const SidecarError(
-        'no_sidecar',
-        'No reply from the Presage sidecar. Start it with `npm start` in sidecar/.',
-        fatal: true,
-      );
+      throw SidecarError('no_sidecar', _unreachable, fatal: true);
     } catch (e) {
       await disconnect();
       if (e is SidecarError) rethrow;
-      throw SidecarError('connect_failed', '$e', fatal: true);
+      throw SidecarError('connect_failed', _unreachable, fatal: true);
     }
+  }
+
+  /// Explains the one failure most visitors will hit, in their terms.
+  ///
+  /// Measurement runs in a local companion process, because the Presage SDK
+  /// computes on-device and has no cloud API. Someone opening the hosted link
+  /// has no such process, so this is the expected outcome for them — and the
+  /// message has to say that rather than leaking a Dart exception.
+  String get _unreachable {
+    final isLoopback = url.contains('127.0.0.1') || url.contains('localhost');
+    return isLoopback
+        ? 'No Mastermind companion app is running on this computer, so there is '
+            'nothing to measure with. Readings are computed locally — the app has '
+            'to be running on the same machine, or you need a link that points at '
+            'one. (Tried $url.)'
+        : 'Could not reach the Mastermind companion app at $url. It may have been '
+            'shut down, or the address may have changed — these addresses are '
+            'temporary and change each time it restarts.';
   }
 
   /// Starts a casing and completes with the final reading when the window ends.

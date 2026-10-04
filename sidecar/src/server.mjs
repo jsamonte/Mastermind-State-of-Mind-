@@ -29,8 +29,15 @@ import { createMockSource, SCENARIOS } from "./mock.mjs";
 import { createSmartSpectraSource, nativeSupportNote } from "./smartspectra.mjs";
 
 const args = parseArgs(process.argv.slice(2));
-const PORT = Number(args.port ?? process.env.SIDECAR_PORT ?? 8787);
-const HOST = "127.0.0.1";
+// PORT is read from the plain `PORT` too, because every container platform sets
+// that and nothing else.
+const PORT = Number(args.port ?? process.env.PORT ?? process.env.SIDECAR_PORT ?? 8787);
+
+// Loopback by default: on a developer machine this process holds the Presage
+// key, a Gemini key and a Firebase private key, and must not be reachable from
+// the network. A container has no loopback worth binding, so deployments set
+// SIDECAR_HOST=0.0.0.0 explicitly — an opt-in, never a default.
+const HOST = args.host ?? process.env.SIDECAR_HOST ?? "127.0.0.1";
 /** Default measurement window. Presage needs a sustained look to produce HRV. */
 const DEFAULT_DURATION_MS = Number(args.duration ?? process.env.CASING_DURATION_MS ?? 30_000);
 /** Readings are emitted at most this often, to keep the UI calm. */
@@ -206,7 +213,25 @@ const httpServer = createServer(async (req, res) => {
 
 // The WebSocket shares the HTTP server, so frames and the auth endpoint live on
 // one port and the app only needs one address configured.
-const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_FRAME_BYTES });
+/** True for origins allowed to open a socket: loopback, or an EXTRA_ORIGINS entry. */
+function isAllowedOrigin(origin) {
+  if (!origin) return HOST === "127.0.0.1"; // a non-browser client is only OK locally
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) || EXTRA_ORIGINS.has(origin);
+}
+
+const wss = new WebSocketServer({
+  server: httpServer,
+  maxPayload: MAX_FRAME_BYTES,
+  // The HTTP endpoints were origin-checked from the start, but the socket was
+  // not — it only logged the origin. That is survivable on loopback and a real
+  // hole once this binds publicly: anyone could stream frames and spend the
+  // account's Presage credits. Refuse the upgrade instead.
+  verifyClient: ({ origin }, done) => {
+    if (isAllowedOrigin(origin)) return done(true);
+    console.warn(`  [ws] refused upgrade from origin ${origin ?? "(none)"}`);
+    done(false, 403, "Origin not allowed");
+  },
+});
 
 httpServer.on("error", (err) => {
   console.error(`sidecar could not listen on ${HOST}:${PORT}: ${err?.message ?? err}`);
@@ -222,7 +247,17 @@ httpServer.listen(PORT, HOST, () => {
   console.log(`  protocol: v${PROTOCOL_VERSION}`);
   console.log(`  window:   ${DEFAULT_DURATION_MS / 1000}s per casing`);
   console.log(`  auth:     ${minter ? `ready (${minter.issuer})` : `disabled - ${authReason}`}`);
-  console.log(`  counsel:  ${counsellor ? `ready (${counsellor.models[0]})` : `disabled - ${counselReason}`}\n`);
+  console.log(`  counsel:  ${counsellor ? `ready (${counsellor.models[0]})` : `disabled - ${counselReason}`}`);
+  if (HOST !== "127.0.0.1") {
+    console.log(`  origins:  ${[...EXTRA_ORIGINS].join(", ") || "(loopback only)"}`);
+    console.warn(
+      `\n!! Bound to ${HOST} — this process is reachable from the network and holds\n` +
+        "   the Presage, Gemini and Firebase credentials. Only the origins above can\n" +
+        "   open a socket; make sure that list is right before exposing it.\n",
+    );
+  } else {
+    console.log("");
+  }
 });
 
 /**
@@ -381,23 +416,18 @@ wss.on("connection", (ws, req) => {
                 console.error(`  [sdk error] code=${e.code} retryable=${e.retryable}: ${e.message}`);
                 send({ type: "error", ...e });
 
-                // kProcessingFailed(8) and kInvalidState(1) leave the pipeline
-                // poisoned: every later sendFrame is refused and the NEXT
-                // measurement silently returns nothing too. Rebuild once per
-                // casing — once, because a reset loop would be worse than a
-                // failed reading.
-                const POISONS_PIPELINE = new Set([1, 8]);
-                if (
-                  POISONS_PIPELINE.has(e.code) &&
-                  pending.source?.recover &&
-                  !pending.recovered
-                ) {
-                  pending.recovered = true;
-                  console.log("  [sdk] rebuilding the pipeline after an error state");
-                  pending.source.recover().catch((err) =>
-                    console.error(`  [sdk] recover failed: ${err?.message ?? err}`),
-                  );
-                }
+                // Deliberately does NOT rebuild the pipeline here.
+                //
+                // An earlier version called source.recover() on kProcessingFailed,
+                // which runs the SDK's synchronous native reset()/start() on the
+                // main thread. That blocked the event loop: the process kept
+                // holding port 8787 while answering nothing, so one bad reading
+                // took down the whole sidecar — and the site with it.
+                //
+                // It was also unnecessary. beginSession() constructs a FRESH
+                // SmartSpectraSDK for every casing and destroys it at the end,
+                // so the next measurement already starts from a clean pipeline.
+                // A failed reading stays a failed reading; it is not contagious.
               },
             });
 

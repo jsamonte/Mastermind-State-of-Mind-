@@ -45,6 +45,20 @@ service cloud.firestore {
       }
     }
 
+    // The one deliberately public document: where the Presage companion app is
+    // currently reachable. The hosted site reads this BEFORE anyone signs in —
+    // without a sidecar address there is nothing to sign in for — so it cannot
+    // require auth.
+    //
+    // It holds no secret. A tunnel hostname is already handed out in links, the
+    // companion app refuses sockets from unlisted origins, and it is only
+    // useful while that tunnel is up. Writes are denied to everyone: it is
+    // published by the sidecar through the Admin SDK, which bypasses rules.
+    match /config/{document} {
+      allow read: if true;
+      allow write: if false;
+    }
+
     // Anything not matched above is denied. Stated explicitly rather than left
     // to the default, so a future `match` added in the wrong place is obvious.
     match /{document=**} {

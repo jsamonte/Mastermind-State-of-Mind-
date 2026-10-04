@@ -62,12 +62,12 @@ export function createMockSource({
     const elapsed = (Date.now() - startedAt) / 1000;
 
     let base;
-    let confidence = 0.88;
+    let confidence = 88; // percent, matching the real SDK
     if (scenario === "calm") base = blend(1);
     else if (scenario === "agitated") base = blend(0);
     else if (scenario === "noisy") {
       base = blend(0.5);
-      confidence = 0.2; // below MIN_CONFIDENCE - nothing should count
+      confidence = 0; // no confidence at all - nothing should count
     } else {
       // settling: ease from agitated to calm over settleSeconds
       base = blend(Math.max(0, Math.min(1, elapsed / settleSeconds)));
