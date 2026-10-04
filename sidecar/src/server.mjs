@@ -277,6 +277,25 @@ httpServer.listen(PORT, HOST, () => {
  */
 let sdkOwner = null;
 
+/**
+ * SDK errors that mean this measurement is over, and the plain-language reason.
+ *
+ * Without this, a rejected API key looked exactly like a quiet failure: the
+ * pipeline refused every subsequent frame with "SmartSpectra is not in a valid
+ * state", one message per frame, and the person waited out the full window to
+ * be told the reading was inconclusive. The cause was in the first error, 55
+ * seconds earlier, and nothing surfaced it.
+ *
+ * Codes are from SmartSpectraErrorCode in the SDK's constants.
+ */
+const TERMINAL_SDK_ERRORS = new Map([
+  [2, "Presage rejected this server's API key, so no measurement can be taken here."],
+  [3, "The measurement service is misconfigured, so no measurement can be taken here."],
+  [4, "The Presage account is out of measurement credits."],
+  [5, "The measurement service could not reach Presage, so this reading was abandoned."],
+  [6, "Presage reported a server error, so this reading was abandoned."],
+]);
+
 wss.on("connection", (ws, req) => {
   // Loopback-only is enforced by the bind, but a stray remote origin is worth refusing.
   const origin = req.headers.origin;
@@ -317,7 +336,10 @@ wss.on("connection", (ws, req) => {
       composure: null,
       verdict: "inconclusive",
       parts: {},
-      reasons: ["The measurement ended before a confident reading arrived."],
+      reasons: [
+        finished.terminalError ??
+          "The measurement ended before a confident reading arrived.",
+      ],
     };
     const span = finished.lastFrameAt - finished.firstFrameAt;
     const fps = span > 0 ? (finished.frames / (span / 1000)).toFixed(1) : "0.0";
@@ -374,6 +396,9 @@ wss.on("connection", (ws, req) => {
       // logs: frame errors used to go only to the browser, so a server with
       // zero frames arriving looked identical to one the SDK ignored.
       badFrames: 0,
+      // Set once the SDK has reported something this measurement cannot
+      // recover from, so the person is told why instead of "inconclusive".
+      terminalError: null,
       decodeFailures: 0,
       accepted: 0,
       refused: 0,
@@ -431,6 +456,20 @@ wss.on("connection", (ws, req) => {
               },
               onError: (e) => {
                 console.error(`  [sdk error] code=${e.code} retryable=${e.retryable}: ${e.message}`);
+
+                // A terminal error poisons the pipeline: every later frame is
+                // refused. Say so once, in words that name the actual problem,
+                // and stop rather than spending the rest of the window proving
+                // it again frame by frame.
+                const terminal = TERMINAL_SDK_ERRORS.get(e.code);
+                if (terminal) {
+                  if (pending.terminalError) return;
+                  pending.terminalError = terminal;
+                  send({ type: "error", code: `sdk_${e.code}`, message: terminal, fatal: true });
+                  void endSession("sdk_unavailable");
+                  return;
+                }
+
                 send({ type: "error", ...e });
 
                 // Deliberately does NOT rebuild the pipeline here.
@@ -495,10 +534,13 @@ wss.on("connection", (ws, req) => {
         else session.accepted += 1;
       } catch (err) {
         session.decodeFailures += 1;
+        // Once per casing, not once per frame: a poisoned pipeline fails all
+        // 900 of them, and 900 identical socket messages bury whatever the
+        // real first error was.
         if (session.decodeFailures === 1) {
           console.error(`  [frame rejected] ${String(err?.message ?? err)}`);
+          send({ type: "error", code: "send_frame_failed", message: String(err?.message ?? err) });
         }
-        send({ type: "error", code: "send_frame_failed", message: String(err?.message ?? err) });
       }
       return;
     }
