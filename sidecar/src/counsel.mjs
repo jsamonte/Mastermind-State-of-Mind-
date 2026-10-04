@@ -23,12 +23,20 @@ export const ATTEMPT_TIMEOUT_MS = Number(process.env.COUNSEL_TIMEOUT_MS ?? 14_00
  */
 export const HEDGE_DELAY_MS = Number(process.env.COUNSEL_HEDGE_MS ?? 5_000);
 
-/** Tried in order. A 503 on demo day is not acceptable, so there are fallbacks. */
+/**
+ * Tried in order. A 503 on demo day is not acceptable, so there are fallbacks.
+ *
+ * Cheapest first, deliberately. This conversation is short prompts and short
+ * replies with no reasoning to do, so the Lite tier is the right size for it as
+ * well as the cheapest - and the full Flash models stay behind it as fallbacks,
+ * which costs nothing while Lite is answering. Verify current per-token prices
+ * at ai.google.dev/pricing before assuming this order still holds.
+ */
 export const MODEL_CHAIN = [
+  "gemini-flash-lite-latest",
+  "gemini-3.1-flash-lite",
   "gemini-flash-latest",
   "gemini-3-flash-preview",
-  "gemini-3.1-flash-lite",
-  "gemini-flash-lite-latest",
 ];
 
 const ENDPOINT = (model) =>

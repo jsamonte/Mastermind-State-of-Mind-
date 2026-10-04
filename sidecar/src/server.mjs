@@ -319,7 +319,14 @@ wss.on("connection", (ws, req) => {
       parts: {},
       reasons: ["The measurement ended before a confident reading arrived."],
     };
+    const span = finished.lastFrameAt - finished.firstFrameAt;
+    const fps = span > 0 ? (finished.frames / (span / 1000)).toFixed(1) : "0.0";
     console.log(`[=] casing ended (${reason}): ${result.verdict} ${result.composure ?? "-"}`);
+    console.log(
+      `    frames: ${finished.frames} received @ ${fps}fps` +
+        ` | ${finished.accepted} accepted, ${finished.refused} refused` +
+        `, ${finished.decodeFailures} rejected, ${finished.badFrames} malformed`,
+    );
     send({
       type: "final",
       reason,
@@ -363,6 +370,15 @@ wss.on("connection", (ws, req) => {
       // and onSignals reads endsAt to report the countdown.
       endsAt: startedAt + durationMs,
       frames: 0,
+      // Why a measurement produced nothing is otherwise unanswerable from the
+      // logs: frame errors used to go only to the browser, so a server with
+      // zero frames arriving looked identical to one the SDK ignored.
+      badFrames: 0,
+      decodeFailures: 0,
+      accepted: 0,
+      refused: 0,
+      firstFrameAt: 0,
+      lastFrameAt: 0,
       lastSent: 0,
       // Set once the pipeline has been rebuilt for this casing, so a fault
       // cannot put the SDK into a reset loop.
@@ -459,15 +475,29 @@ wss.on("connection", (ws, req) => {
       try {
         frame = decodeFrame(data);
       } catch (err) {
+        session.badFrames += 1;
+        if (session.badFrames === 1) console.error(`  [bad frame] ${err.message}`);
         send({ type: "error", code: err.code ?? "bad_frame", message: err.message });
         return;
       }
       session.frames += 1;
+      if (!session.firstFrameAt) session.firstFrameAt = Date.now();
+      session.lastFrameAt = Date.now();
       try {
         // The SDK only takes raw pixels. A compressed frame is decoded here, at
         // the edge, so nothing downstream has to know the wire format.
-        session.source.sendFrame(frame.pixelFormat === "jpeg" ? decodeJpegFrame(frame) : frame);
+        const raw = frame.pixelFormat === "jpeg" ? decodeJpegFrame(frame) : frame;
+        // A false return is not an error but it is not a delivered frame
+        // either: it is the monotonic guard dropping it, or the SDK refusing
+        // it. Counted apart, because "frames arrived" and "frames reached the
+        // pipeline" fail for completely different reasons.
+        if (session.source.sendFrame(raw) === false) session.refused += 1;
+        else session.accepted += 1;
       } catch (err) {
+        session.decodeFailures += 1;
+        if (session.decodeFailures === 1) {
+          console.error(`  [frame rejected] ${String(err?.message ?? err)}`);
+        }
         send({ type: "error", code: "send_frame_failed", message: String(err?.message ?? err) });
       }
       return;
