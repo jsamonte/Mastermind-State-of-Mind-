@@ -367,7 +367,12 @@ wss.on("connection", (ws, req) => {
       send({
         type: "error",
         code: "sidecar_busy",
-        message: "another tab is already measuring - close it, or wait for it to finish",
+        // Not necessarily another TAB. The hosted site points everyone at one
+        // sidecar, so the person holding the SDK is usually a stranger, and
+        // telling someone to close a tab they do not have reads as a bug.
+        message:
+          "Someone else is being measured right now. A measurement takes about " +
+          "a minute - try again in a moment.",
       });
       return;
     }

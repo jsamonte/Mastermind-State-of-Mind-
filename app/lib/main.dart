@@ -312,6 +312,7 @@ class HackathonCredits extends StatelessWidget {
     'Best Use of Gemini API',
     'Best Use of Presage',
     'Best Use of Auth0',
+    'SWIVEL Challenge',
   ];
 
   @override
