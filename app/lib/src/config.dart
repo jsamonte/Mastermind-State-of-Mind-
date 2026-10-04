@@ -29,7 +29,18 @@ class Config {
     if (fromQuery != null && fromQuery.isNotEmpty) {
       _remember(_sidecarKey, fromQuery);
     }
-    final remembered = fromQuery?.isNotEmpty == true ? fromQuery : _recall(_sidecarKey);
+    var remembered = fromQuery?.isNotEmpty == true ? fromQuery : _recall(_sidecarKey);
+
+    // A locally-served page ignores a remembered REMOTE address, however it got
+    // there - an older build that adopted one, or a tunnel pinned earlier. The
+    // local version measures locally or not at all; silently routing it through
+    // a tunnel is how it ends up slower than the hosted one.
+    if (pageIsLocal && fromQuery == null && remembered != null) {
+      final host = Uri.tryParse(remembered)?.host;
+      if (host != '127.0.0.1' && host != 'localhost' && host != '::1') {
+        remembered = null;
+      }
+    }
 
     final configured = (remembered != null && remembered.isNotEmpty)
         ? remembered
@@ -90,13 +101,29 @@ class Config {
     return fromQuery != null && fromQuery.isNotEmpty;
   }
 
+  /// True when the app itself is being served from this machine.
+  ///
+  /// That is the whole definition of "the local version": if the page came from
+  /// loopback, the companion app is on this machine too, and the measurement
+  /// has no business leaving it.
+  static bool get pageIsLocal {
+    final host = Uri.base.host;
+    return host == '127.0.0.1' || host == 'localhost' || host == '::1';
+  }
+
   /// Adopts an address discovered at runtime (see `SidecarDirectory`).
   ///
   /// Overwrites whatever was remembered: the freshly published address is by
-  /// definition more current than a cached one. Only an explicit `?sidecar=`
-  /// on this page load outranks it.
+  /// definition more current than a cached one. Two things outrank it: an
+  /// explicit `?sidecar=` on this page load, and the page being served locally.
+  ///
+  /// That second one is not a nicety. The published address is a tunnel, so a
+  /// locally-served page that adopted it would send every frame out to the
+  /// internet and back to the machine it started on. On a congested network
+  /// that collapsed the stream to under 5fps and Presage refused the lot of it:
+  /// "Use a camera mode that provides at least 25 frames per second."
   static void adoptDiscovered(String url) {
-    if (hasPinnedSidecar || url.isEmpty) return;
+    if (hasPinnedSidecar || pageIsLocal || url.isEmpty) return;
     _remember(_sidecarKey, url);
   }
 
@@ -156,20 +183,35 @@ class Config {
   /// was 3.5 MB/s — so almost no frames arrived and Presage produced no output
   /// at all. JPEG at 320x240 measures 2.28 MB/s worst case, inside that budget.
   ///
-  /// Loopback stays RAW. Compression is lossy, and Presage reads a pulse from
-  /// ~1% colour changes in skin, so the local path keeps perfect fidelity and
-  /// remains the reference a compressed reading should be checked against.
-  static bool get compressFrames => !sidecarIsLoopback;
+  /// Loopback used to stay RAW, for fidelity: compression is lossy and Presage
+  /// reads a pulse from ~1% colour changes in skin. That stopped being
+  /// affordable when the SDK moved into a child process, because the frames now
+  /// cross a pipe. Raw 640x480 at 30fps is 27.6 MB/s through that pipe, which
+  /// it cannot carry: measured locally, 1796 frames arrived at 29.8fps and only
+  /// 423 of them reached the pipeline - the other 1373 were dropped at a
+  /// blocked pipe, leaving Presage an effective 7fps and the complaint "use a
+  /// camera mode that provides at least 25 frames per second".
+  ///
+  /// Compressed frames are a few KB, so every one of them gets through. A
+  /// slightly lossy frame that arrives beats a perfect one that does not.
+  static bool get compressFrames => true;
 
   /// Quality for compressed frames. High on purpose: the usual reason to drop
   /// quality is file size, and the thing being destroyed here would be the
   /// signal itself.
   static double get jpegQuality => 0.9;
 
-  /// Capture size. Smaller whenever frames leave the machine — over a network
-  /// the uplink, not the camera, is the binding constraint.
-  static int get captureWidth => (isLikelyMobile || compressFrames) ? 320 : 640;
-  static int get captureHeight => (isLikelyMobile || compressFrames) ? 240 : 480;
+  /// Capture size, 320x240 everywhere.
+  ///
+  /// Not a bandwidth decision any more - it is what the SDK can keep up with.
+  /// This machine is ARM64 and the SmartSpectra runtime is x64, so it runs
+  /// emulated, and emulated it cannot process 640x480 at 30fps: measured
+  /// locally, 973 frames arrived at 29fps and the pipeline accepted 237 of
+  /// them before stalling outright. At 320x240 it keeps up with the full
+  /// stream. Presage cares that 25 frames a second REACH it, which a smaller
+  /// frame that arrives does and a larger one that is dropped does not.
+  static int get captureWidth => 320;
+  static int get captureHeight => 240;
   /// Presage rejects anything under 25fps outright — its validation stream says
   /// "Use a camera mode that provides at least 25 frames per second", and until
   /// it is satisfied no metric ever resolves, so the casing just runs out. 15
