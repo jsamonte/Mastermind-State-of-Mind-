@@ -27,7 +27,8 @@ import { decodeJpegFrame } from "./jpeg_frame.mjs";
 import { decodeFrame, VERSION as PROTOCOL_VERSION } from "./protocol.mjs";
 import { composure } from "./composure.mjs";
 import { createMockSource, SCENARIOS } from "./mock.mjs";
-import { createSmartSpectraSource, nativeSupportNote } from "./smartspectra.mjs";
+import { createIsolatedSource } from "./casing_host.mjs";
+import { nativeSupportNote } from "./smartspectra.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 // PORT is read from the plain `PORT` too, because every container platform sets
@@ -338,6 +339,7 @@ wss.on("connection", (ws, req) => {
       parts: {},
       reasons: [
         finished.terminalError ??
+          finished.source?.abandonedReason ??
           "The measurement ended before a confident reading arrived.",
       ],
     };
@@ -449,8 +451,13 @@ wss.on("connection", (ws, req) => {
               onStatus: (s) => send({ type: "status", ...s }),
               onError: (e) => send({ type: "error", ...e }),
             })
-          : await createSmartSpectraSource({
+          : await createIsolatedSource({
+              // The SDK runs in its own process, so a native call that never
+              // returns costs one reading instead of the whole sidecar. The
+              // child does the JPEG decode too, which takes that work off the
+              // event loop everyone else is sharing.
               apiKey: process.env.PRESAGE_API_KEY,
+              nodePath: process.env.CASING_NODE,
               onSignals,
               onStatus: (s) => {
                 // Presage's validation hints say WHY a measurement is not
@@ -472,6 +479,18 @@ wss.on("connection", (ws, req) => {
                   pending.terminalError = terminal;
                   send({ type: "error", code: `sdk_${e.code}`, message: terminal, fatal: true });
                   void endSession("sdk_unavailable");
+                  return;
+                }
+
+                // Anything else flagged fatal - the watchdog giving up on a
+                // wedged child, most of all - ends the window too. Letting it
+                // run on would spend another 50 seconds proving what the error
+                // already said.
+                if (e.fatal) {
+                  if (pending.terminalError) return;
+                  pending.terminalError = e.message;
+                  send({ type: "error", ...e });
+                  void endSession(e.code ?? "source_failed");
                   return;
                 }
 
@@ -528,14 +547,19 @@ wss.on("connection", (ws, req) => {
       if (!session.firstFrameAt) session.firstFrameAt = Date.now();
       session.lastFrameAt = Date.now();
       try {
-        // The SDK only takes raw pixels. A compressed frame is decoded here, at
-        // the edge, so nothing downstream has to know the wire format.
-        const raw = frame.pixelFormat === "jpeg" ? decodeJpegFrame(frame) : frame;
+        // Mock runs in-process and wants pixels; the real source is a child
+        // process that takes the browser's bytes as they arrived and decodes
+        // them over there.
+        const payload = session.source.isolated
+            ? data
+            : frame.pixelFormat === "jpeg"
+                ? decodeJpegFrame(frame)
+                : frame;
         // A false return is not an error but it is not a delivered frame
-        // either: it is the monotonic guard dropping it, or the SDK refusing
-        // it. Counted apart, because "frames arrived" and "frames reached the
-        // pipeline" fail for completely different reasons.
-        if (session.source.sendFrame(raw) === false) session.refused += 1;
+        // either: it is the monotonic guard dropping it, the child falling
+        // behind, or the SDK refusing it. Counted apart, because "frames
+        // arrived" and "frames reached the pipeline" fail for different reasons.
+        if (session.source.sendFrame(payload) === false) session.refused += 1;
         else session.accepted += 1;
       } catch (err) {
         session.decodeFailures += 1;
