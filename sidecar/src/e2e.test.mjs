@@ -142,13 +142,21 @@ async function runCasing({ scenario, port, durationMs = 6000, thresholds }) {
   await once(child, "exit").catch(() => {});
 }
 
-// --- a second tab must be refused, not allowed to corrupt the SDK ------------
+// --- the concurrency cap admits up to the limit and turns away the rest ------
 //
-// The capture SDK's state is process-global ("native SDK state is
-// process-global", per its own typings), so a second casing does not merely
-// queue - it drops the FIRST tab out of its measuring state mid-window, and
-// that tab then fails with an opaque invalid-state error it did nothing to
-// cause. The second socket has to be turned away at the door.
+// This used to assert that a SECOND tab was refused outright, because the
+// capture SDK's state is process-global ("native SDK state is process-global",
+// per its own typings): a second casing in the same process did not queue, it
+// dropped the FIRST tab out of its measuring state mid-window and failed it
+// with an opaque invalid-state error it did nothing to cause.
+//
+// Each casing now runs in its own process, so they share nothing and that
+// reason is gone. What remains is a capacity limit, which is a different
+// contract and tested as one: up to the cap runs concurrently, past it is
+// refused, and nobody already measuring is disturbed either way.
+//
+// Pinned to one slot via MAX_CASINGS so the test asserts the behaviour rather
+// than however many cores the machine running it happens to have.
 //
 // Mock-sourced so it runs anywhere. The guard is deliberately not
 // mode-dependent: one that only engages against real hardware is one nobody
@@ -156,6 +164,7 @@ async function runCasing({ scenario, port, durationMs = 6000, thresholds }) {
 {
   const child = spawn(process.execPath, [SERVER, "--source=mock", "--scenario=calm", "--port=18805"], {
     stdio: ["ignore", "pipe", "pipe"], cwd: path.dirname(SERVER),
+    env: { ...process.env, MAX_CASINGS: "1" },
   });
   await new Promise((resolve) => child.stdout.on("data", (d) => d.toString().includes("listening") && resolve()));
 
@@ -182,14 +191,54 @@ async function runCasing({ scenario, port, durationMs = 6000, thresholds }) {
   );
   assert.ok(
     !secondMsgs.some((m) => m.type === "casing"),
-    "second tab must not get a casing while the first holds the SDK",
+    "a tab over the cap must not get a casing",
   );
   // The whole point of the guard: the innocent tab is left alone.
   assert.ok(
     !firstMsgs.some((m) => m.type === "error"),
     `first tab must be undisturbed, got ${JSON.stringify(firstMsgs.filter((m) => m.type === "error"))}`,
   );
-  console.log("two tabs  -> first keeps the SDK, second told sidecar_busy");
+  console.log("at cap    -> first keeps measuring, the one over the cap is told sidecar_busy");
+
+  // The other half of the contract, and the reason the cap exists at all:
+  // BELOW it, measurements genuinely run side by side. A cap that silently
+  // serialised everything would pass the test above and still leave a queue.
+  {
+    const two = spawn(process.execPath, [SERVER, "--source=mock", "--scenario=calm", "--port=18807"], {
+      stdio: ["ignore", "pipe", "pipe"], cwd: path.dirname(SERVER),
+      env: { ...process.env, MAX_CASINGS: "2" },
+    });
+    await new Promise((resolve) => two.stdout.on("data", (d) => d.toString().includes("listening") && resolve()));
+
+    const socks = [];
+    const buckets = [];
+    for (let i = 0; i < 2; i++) {
+      const sock = new WebSocket("ws://127.0.0.1:18807");
+      await once(sock, "open");
+      const bucket = [];
+      sock.on("message", (raw) => bucket.push(JSON.parse(raw.toString())));
+      sock.send(JSON.stringify({ type: "begin", durationMs: 4000 }));
+      socks.push(sock);
+      buckets.push(bucket);
+    }
+    await new Promise((r) => setTimeout(r, 900));
+
+    for (let i = 0; i < 2; i++) {
+      assert.ok(
+        buckets[i].some((m) => m.type === "casing"),
+        `both should be measuring at once; number ${i + 1} was not: ${JSON.stringify(buckets[i])}`,
+      );
+      assert.ok(
+        !buckets[i].some((m) => m.type === "error"),
+        `neither should see an error; number ${i + 1} did: ${JSON.stringify(buckets[i].filter((m) => m.type === "error"))}`,
+      );
+    }
+    console.log("under cap -> two measure side by side, neither disturbed");
+
+    socks.forEach((sock) => sock.close());
+    two.kill();
+    await once(two, "exit").catch(() => {});
+  }
 
   // ...and the slot is handed over when the owner leaves, not leaked forever.
   first.close();

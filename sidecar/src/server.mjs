@@ -21,6 +21,7 @@
 import { WebSocketServer } from "ws";
 import { createServer } from "node:http";
 import process from "node:process";
+import os from "node:os";
 import { createAuthMinter } from "./auth.mjs";
 import { createCounsellor } from "./counsel.mjs";
 import { decodeJpegFrame } from "./jpeg_frame.mjs";
@@ -248,6 +249,7 @@ httpServer.listen(PORT, HOST, () => {
   console.log(`  source:   ${sourceMode}${sourceMode === "mock" ? ` (${scenario})` : ""}`);
   console.log(`  protocol: v${PROTOCOL_VERSION}`);
   console.log(`  window:   ${DEFAULT_DURATION_MS / 1000}s per casing`);
+  console.log(`  at once:  ${MAX_CONCURRENT_CASINGS} measurement${MAX_CONCURRENT_CASINGS === 1 ? "" : "s"}`);
   console.log(`  auth:     ${minter ? `ready (${minter.issuer})` : `disabled - ${authReason}`}`);
   console.log(`  counsel:  ${counsellor ? `ready (${counsellor.models[0]})` : `disabled - ${counselReason}`}`);
   if (HOST !== "127.0.0.1") {
@@ -277,6 +279,29 @@ httpServer.listen(PORT, HOST, () => {
  * plainly what is happening.
  */
 let sdkOwner = null;
+
+/**
+ * How many measurements may run at once.
+ *
+ * This used to be one, enforced by sdkOwner below, because the SDK was a
+ * process-global singleton: two tabs measuring at once fought over it and the
+ * damage landed on the innocent one. Each casing now runs in its own process,
+ * so they no longer share anything and that reason is gone.
+ *
+ * What caps it now is the machine. The SmartSpectra runtime is x64 and this
+ * class of host may be ARM, so it can be running emulated, and each concurrent
+ * measurement is a whole pipeline at 30fps. Overcommitting does not fail
+ * politely - it slows every measurement below the 25fps Presage requires and
+ * spoils all of them instead of queueing one. So: a conservative share of the
+ * cores, overridable when you know your own hardware.
+ */
+const MAX_CONCURRENT_CASINGS = Math.max(
+  1,
+  Number(process.env.MAX_CASINGS ?? Math.min(3, Math.floor((os.cpus()?.length ?? 4) / 3))),
+);
+
+/** Casings in flight, for the cap above. */
+let activeCasings = 0;
 
 /**
  * SDK errors that mean this measurement is over, and the plain-language reason.
@@ -328,9 +353,9 @@ wss.on("connection", (ws, req) => {
       /* best effort */
     }
 
-    // Released only once teardown has actually finished. The SDK's typings say
-    // to await destroy() before constructing a replacement session, so handing
-    // the slot on any earlier rebuilds the race this guard exists to prevent.
+    // Released only once teardown has actually finished, so a slot is never
+    // handed on while the process using it is still shutting down.
+    if (finished.heldSlot) activeCasings = Math.max(0, activeCasings - 1);
     if (sdkOwner === ws) sdkOwner = null;
 
     const result = finished.last ?? {
@@ -365,16 +390,17 @@ wss.on("connection", (ws, req) => {
       send({ type: "error", code: "already_casing", message: "a measurement is already running" });
       return;
     }
-    if (sdkOwner && sdkOwner !== ws) {
+    if (activeCasings >= MAX_CONCURRENT_CASINGS) {
       send({
         type: "error",
         code: "sidecar_busy",
         // Not necessarily another TAB. The hosted site points everyone at one
-        // sidecar, so the person holding the SDK is usually a stranger, and
-        // telling someone to close a tab they do not have reads as a bug.
+        // sidecar, so the people ahead are usually strangers, and telling
+        // someone to close a tab they do not have reads as a bug.
         message:
-          "Someone else is being measured right now. A measurement takes about " +
-          "a minute - try again in a moment.",
+          `${MAX_CONCURRENT_CASINGS} measurement${MAX_CONCURRENT_CASINGS === 1 ? " is" : "s are"} ` +
+          "already running, which is all this machine can do at once. One takes " +
+          "about a minute - try again in a moment.",
       });
       return;
     }
@@ -406,6 +432,8 @@ wss.on("connection", (ws, req) => {
       // Set once the SDK has reported something this measurement cannot
       // recover from, so the person is told why instead of "inconclusive".
       terminalError: null,
+      /** True once this casing has taken one of the concurrency slots. */
+      heldSlot: true,
       decodeFailures: 0,
       accepted: 0,
       refused: 0,
@@ -437,8 +465,9 @@ wss.on("connection", (ws, req) => {
     };
 
     // Claimed before the first await rather than after start() returns:
-    // beginSession is async, so two sockets can both clear the guard above if
-    // the slot is only taken once the source is up.
+    // beginSession is async, so several sockets could all clear the check above
+    // if the slot were only taken once the source is up.
+    activeCasings += 1;
     sdkOwner = ws;
 
     try {
@@ -514,6 +543,8 @@ wss.on("connection", (ws, req) => {
       await pending.source.start();
     } catch (err) {
       console.error("  could not start source:", err?.message ?? err);
+      activeCasings = Math.max(0, activeCasings - 1);
+      pending.heldSlot = false;
       sdkOwner = null;
       send({
         type: "error",
